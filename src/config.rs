@@ -184,6 +184,12 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub api_key_env: Option<String>,
 
+    /// Shell command to run to retrieve the API key (e.g. a password manager CLI).
+    /// The command is run via `sh -c` (`cmd /C` on Windows) on every request, and its
+    /// trimmed stdout is used as the key. Mutually exclusive with `api_key_env`.
+    #[serde(default)]
+    pub api_key_cmd: Option<String>,
+
     /// Custom base URL for the API endpoint (e.g., "http://localhost:11434/v1/").
     /// Optional custom base URL for the API endpoint (e.g. "http://localhost:11434/v1/").
     /// Overrides the adapter's default endpoint when set.
@@ -256,12 +262,27 @@ impl Config {
         let config: Config = toml::from_str(&contents)
             .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))?;
 
+        config.validate()?;
+
         info!(
             "Loaded config from {:?} ({} providers)",
             path,
             config.provider.len()
         );
         Ok(config)
+    }
+
+    /// Validate cross-field constraints that serde can't express on its own.
+    fn validate(&self) -> Result<()> {
+        for provider in &self.provider {
+            if provider.api_key_env.is_some() && provider.api_key_cmd.is_some() {
+                return Err(eyre!(
+                    "Provider '{}' sets both api_key_env and api_key_cmd; only one may be set",
+                    provider.name
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Get the path to the config file.
@@ -322,6 +343,7 @@ impl Default for Config {
                 name: "gemini".to_string(),
                 models: Some(vec!["gemini-2.5-flash".to_string()]),
                 api_key_env: None,
+                api_key_cmd: None,
                 base_url: None,
                 adapter: "gemini".to_string(),
                 wire_protocol: None,
@@ -436,6 +458,44 @@ models = ["muse-spark-1.2-contributor"]
             Some(WireProtocol::Responses)
         );
         assert_eq!(config.provider[1].wire_protocol, None);
+    }
+
+    #[test]
+    fn validate_rejects_both_api_key_env_and_api_key_cmd() {
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "openai"
+adapter = "openai"
+models = ["gpt-4o"]
+api_key_env = "OPENAI_API_KEY"
+api_key_cmd = "echo secret"
+"#,
+        )
+        .unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("openai"));
+    }
+
+    #[test]
+    fn validate_allows_either_api_key_env_or_api_key_cmd_alone() {
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "openai"
+adapter = "openai"
+models = ["gpt-4o"]
+api_key_env = "OPENAI_API_KEY"
+
+[[provider]]
+name = "anthropic"
+adapter = "anthropic"
+models = ["claude-sonnet-4-0"]
+api_key_cmd = "echo secret"
+"#,
+        )
+        .unwrap();
+        assert!(config.validate().is_ok());
     }
 
     #[test]

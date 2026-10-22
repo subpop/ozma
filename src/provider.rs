@@ -11,8 +11,10 @@ use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ContentPart as GenaiContentPart,
     Tool as GenaiTool, ToolCall, ToolResponse,
 };
-use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
-use genai::{Client, ServiceTarget};
+use genai::resolver::{
+    AuthData, Endpoint, ProviderConfig as GenaiProviderConfig, ServiceTargetResolver,
+};
+use genai::{Client, ModelIden, ServiceTarget};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
@@ -76,8 +78,22 @@ pub(crate) async fn discover_models(config: &ProviderConfig) -> Vec<String> {
             return vec![];
         }
     };
+    // `all_model_names` does not run the service-target resolver, so resolve
+    // auth/endpoint first (runs api_key_cmd, applies base_url) and pass them
+    // explicitly.
+    let target = match client
+        .resolve_service_target(ModelIden::new(adapter_kind, ""))
+        .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            info!("Could not resolve auth for '{}': {}", config.name, e);
+            return vec![];
+        }
+    };
+    let provider_cfg = GenaiProviderConfig::from_auth(target.auth).with_endpoint(target.endpoint);
     client
-        .all_model_names(adapter_kind, ())
+        .all_model_names(adapter_kind, provider_cfg)
         .await
         .unwrap_or_else(|e| {
             info!("Could not fetch model list for '{}': {}", config.name, e);
@@ -670,6 +686,41 @@ fn build_headers(
     map
 }
 
+/// Run a shell command to retrieve an API key, returning its trimmed stdout.
+/// Runs via `sh -c` (`cmd /C` on Windows), matching the shell used by the `run_command` tool.
+async fn run_api_key_cmd(cmd: &str) -> std::result::Result<String, String> {
+    debug!("Running api_key_cmd: {}", cmd);
+
+    let shell = if cfg!(target_os = "windows") {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+
+    let output = tokio::process::Command::new(shell.0)
+        .arg(shell.1)
+        .arg(cmd)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run api_key_cmd '{}': {}", cmd, e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "api_key_cmd '{}' exited with {}: {}",
+            cmd,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if key.is_empty() {
+        return Err(format!("api_key_cmd '{}' produced empty output", cmd));
+    }
+
+    Ok(key)
+}
+
 /// Build a `genai::Client` from a provider config.
 fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Result<Client> {
     let configured_adapter_kind = AdapterKind::from_lower_str(&config.adapter)
@@ -702,9 +753,14 @@ fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Resul
     // Install a resolver when there is something to override, or when
     // wire_protocol remaps the effective adapter and we must preserve the
     // configured adapter defaults for endpoint/auth.
-    if config.base_url.is_some() || config.api_key_env.is_some() || preserve_adapter_defaults {
+    if config.base_url.is_some()
+        || config.api_key_env.is_some()
+        || config.api_key_cmd.is_some()
+        || preserve_adapter_defaults
+    {
         let base_url = config.base_url.clone();
         let api_key_env = config.api_key_env.clone();
+        let api_key_cmd = config.api_key_cmd.clone();
         let adapter_default_auth_env = configured_adapter_kind
             .default_key_env_name()
             .map(ToString::to_string);
@@ -717,26 +773,45 @@ fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Resul
             None
         };
 
-        let resolver = ServiceTargetResolver::from_resolver_fn(
-            move |st: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
-                let endpoint = match base_url {
-                    Some(ref url) => Endpoint::from_owned(url.clone()),
-                    None => match &adapter_default_base_url {
-                        Some(url) => Endpoint::from_owned(url.clone()),
-                        None => st.endpoint,
-                    },
-                };
-                let auth = match api_key_env {
-                    Some(ref env_name) => AuthData::from_env(env_name),
-                    None => match &adapter_default_auth_env {
-                        Some(env_name) => AuthData::from_env(env_name),
-                        None => st.auth,
-                    },
-                };
-                Ok(ServiceTarget {
-                    endpoint,
-                    auth,
-                    ..st
+        let resolver = ServiceTargetResolver::from_resolver_async_fn(
+            move |st: ServiceTarget| -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = genai::resolver::Result<ServiceTarget>> + Send,
+                >,
+            > {
+                let base_url = base_url.clone();
+                let api_key_env = api_key_env.clone();
+                let api_key_cmd = api_key_cmd.clone();
+                let adapter_default_auth_env = adapter_default_auth_env.clone();
+                let adapter_default_base_url = adapter_default_base_url.clone();
+
+                Box::pin(async move {
+                    let endpoint = match base_url {
+                        Some(url) => Endpoint::from_owned(url),
+                        None => match adapter_default_base_url {
+                            Some(url) => Endpoint::from_owned(url),
+                            None => st.endpoint,
+                        },
+                    };
+                    let auth = if let Some(cmd) = api_key_cmd {
+                        let key = run_api_key_cmd(&cmd)
+                            .await
+                            .map_err(genai::resolver::Error::Custom)?;
+                        AuthData::from_single(key)
+                    } else {
+                        match api_key_env {
+                            Some(env_name) => AuthData::from_env(env_name),
+                            None => match adapter_default_auth_env {
+                                Some(env_name) => AuthData::from_env(env_name),
+                                None => st.auth,
+                            },
+                        }
+                    };
+                    Ok(ServiceTarget {
+                        endpoint,
+                        auth,
+                        ..st
+                    })
                 })
             },
         );
@@ -756,6 +831,7 @@ mod tests {
             name: "test".to_string(),
             models: Some(vec!["model".to_string()]),
             api_key_env: None,
+            api_key_cmd: None,
             base_url: None,
             adapter: adapter.to_string(),
             wire_protocol,
@@ -803,5 +879,23 @@ mod tests {
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::OpenAIResp
         );
+    }
+
+    #[tokio::test]
+    async fn run_api_key_cmd_returns_trimmed_stdout() {
+        let key = run_api_key_cmd("echo mysecret").await.unwrap();
+        assert_eq!(key, "mysecret");
+    }
+
+    #[tokio::test]
+    async fn run_api_key_cmd_errors_on_nonzero_exit() {
+        let err = run_api_key_cmd("exit 1").await.unwrap_err();
+        assert!(err.contains("exited with"));
+    }
+
+    #[tokio::test]
+    async fn run_api_key_cmd_errors_on_empty_output() {
+        let err = run_api_key_cmd("true").await.unwrap_err();
+        assert!(err.contains("empty output"));
     }
 }

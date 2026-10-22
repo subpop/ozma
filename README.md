@@ -82,6 +82,10 @@ name = "openai"
 adapter = "openai"
 models = ["gpt-4o-mini", "gpt-4o", "o3-mini"]
 # api_key_env = "OPENAI_API_KEY"  # genai auto-detects this
+# api_key_cmd = "op read op://vault/openai/credential"  # alternative to api_key_env:
+# run a shell command to fetch the key on every request (e.g. from a password
+# manager). Setting both api_key_env and api_key_cmd for the same provider is
+# a config error.
 # additional_headers = { "x-my-header" = "value" }
 # temperature = 0.7
 # top_p = 1.0
