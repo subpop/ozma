@@ -298,7 +298,10 @@ mod tests {
             PricingCatalog::map_provider_id("MyProvider", Some("OpenAI")),
             "openai"
         );
-        assert_eq!(PricingCatalog::map_provider_id("Anthropic", None), "anthropic");
+        assert_eq!(
+            PricingCatalog::map_provider_id("Anthropic", None),
+            "anthropic"
+        );
     }
 
     #[test]

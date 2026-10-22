@@ -13,8 +13,13 @@ use crate::action::Action;
 /// `Provider { models: None }` means the provider's model list is not known yet
 /// and must be fetched lazily when the user expands its node in the picker.
 pub enum ModelSourceConfig {
-    Provider { name: String, models: Option<Vec<String>> },
-    Agent { name: String },
+    Provider {
+        name: String,
+        models: Option<Vec<String>>,
+    },
+    Agent {
+        name: String,
+    },
 }
 
 /// A top-level node in the provider/model tree.
@@ -124,7 +129,11 @@ impl ModelPicker {
     /// opportunistically after switching to a provider that just discovered its
     /// own models. Clears any in-flight loading indicator.
     pub fn set_provider_models(&mut self, name: &str, models: Vec<String>) {
-        if let Some(node) = self.nodes.iter_mut().find(|n| !n.is_agent && n.name == name) {
+        if let Some(node) = self
+            .nodes
+            .iter_mut()
+            .find(|n| !n.is_agent && n.name == name)
+        {
             node.loading = false;
             node.models = Some(models);
             self.rebuild_rows();
@@ -188,7 +197,9 @@ impl ModelPicker {
             for (ni, node) in self.nodes.iter().enumerate() {
                 let Some(models) = &node.models else { continue };
                 for (mi, m) in models.iter().enumerate() {
-                    if m.to_lowercase().contains(&query) || node.name.to_lowercase().contains(&query) {
+                    if m.to_lowercase().contains(&query)
+                        || node.name.to_lowercase().contains(&query)
+                    {
                         self.rows.push(Row::Model(ni, mi));
                     }
                 }
@@ -237,7 +248,10 @@ impl ModelPicker {
 
     /// The row currently under the selection cursor, if any.
     fn current_row(&self) -> Option<Row> {
-        self.list_state.selected().and_then(|i| self.rows.get(i)).copied()
+        self.list_state
+            .selected()
+            .and_then(|i| self.rows.get(i))
+            .copied()
     }
 
     /// Expand or collapse a provider/agent node. Returns an action to fetch its
@@ -301,7 +315,9 @@ impl ModelPicker {
             Some(Row::Model(ni, mi)) => {
                 let node = &self.nodes[ni];
                 let model = node.models.as_ref().and_then(|m| m.get(mi)).cloned();
-                let Some(model) = model else { return Action::Noop };
+                let Some(model) = model else {
+                    return Action::Noop;
+                };
                 let provider = node.name.clone();
                 self.hide();
                 Action::SwitchModel(model, provider)
@@ -472,7 +488,8 @@ impl ModelPicker {
                 Span::raw(" cancel"),
             ]
         };
-        let help = ratatui::widgets::Paragraph::new(Line::from(help_text)).alignment(Alignment::Center);
+        let help =
+            ratatui::widgets::Paragraph::new(Line::from(help_text)).alignment(Alignment::Center);
         frame.render_widget(help, help_area);
     }
 
@@ -484,9 +501,13 @@ impl ModelPicker {
                 let arrow = if node.expanded { "▾ " } else { "▸ " };
                 let is_active = node.name == self.active_provider;
                 let style = if is_active {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(arrow, Style::default().fg(Color::DarkGray)),
@@ -518,7 +539,9 @@ impl ModelPicker {
                     Style::default().fg(Color::DarkGray)
                 };
                 let model_style = if active {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -534,7 +557,9 @@ impl ModelPicker {
                     // Flattened search results; show provider name, right-aligned.
                     let name_len = prefix.len() + model.len();
                     let provider_len = node.name.len();
-                    let padding = available.saturating_sub(name_len).saturating_sub(provider_len);
+                    let padding = available
+                        .saturating_sub(name_len)
+                        .saturating_sub(provider_len);
                     let pad_str = " ".repeat(padding);
                     ListItem::new(Line::from(vec![
                         Span::styled(prefix, prefix_style),

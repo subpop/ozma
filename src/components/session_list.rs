@@ -133,8 +133,10 @@ impl SessionList {
             .iter()
             .map(|s| {
                 let date = s.updated_at.format("%Y-%m-%d %H:%M");
-                let mut meta =
-                    format!("{} / {} · {} msgs · {}", s.provider, s.model, s.message_count, date);
+                let mut meta = format!(
+                    "{} / {} · {} msgs · {}",
+                    s.provider, s.model, s.message_count, date
+                );
                 if let Some(cwd) = s.cwd.as_deref() {
                     let short = shorten_path(cwd, 32);
                     meta = format!("{meta} · {short}");
@@ -278,7 +280,11 @@ fn shorten_path(path: &str, max_chars: usize) -> String {
     if path.chars().count() <= max_chars {
         return path.to_string();
     }
-    let tail: String = path.chars().rev().take(max_chars.saturating_sub(1)).collect();
+    let tail: String = path
+        .chars()
+        .rev()
+        .take(max_chars.saturating_sub(1))
+        .collect();
     let tail: String = tail.chars().rev().collect();
     format!("…{tail}")
 }

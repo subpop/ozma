@@ -1,5 +1,5 @@
-mod action;
 mod acp;
+mod action;
 mod app;
 mod cli;
 mod components;

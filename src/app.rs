@@ -99,10 +99,14 @@ impl<'a> App<'a> {
             match Provider::from_config(&cfg).await {
                 Ok(p) => p,
                 // Fall through — connect agent path doesn't need this provider.
-                Err(_) => Provider::from_config(&Config::default()).await.expect("default provider"),
+                Err(_) => Provider::from_config(&Config::default())
+                    .await
+                    .expect("default provider"),
             }
         } else {
-            Provider::from_config(&Config::default()).await.expect("default provider")
+            Provider::from_config(&Config::default())
+                .await
+                .expect("default provider")
         };
         Self {
             should_quit: false,
@@ -930,10 +934,7 @@ impl<'a> App<'a> {
     fn record_usage(&mut self, usage: &TokenUsage) {
         self.home.conversation.add_usage(usage);
         if let Some(catalog) = &self.pricing {
-            let adapter = self
-                .config
-                .active_provider()
-                .map(|p| p.adapter.as_str());
+            let adapter = self.config.active_provider().map(|p| p.adapter.as_str());
             let provider_id =
                 PricingCatalog::map_provider_id(&self.home.conversation.provider, adapter);
             if let Some(cost) =
@@ -947,10 +948,7 @@ impl<'a> App<'a> {
     /// Update the conversation's context window from the pricing catalog.
     fn update_context_window(&mut self) {
         if let Some(catalog) = &self.pricing {
-            let adapter = self
-                .config
-                .active_provider()
-                .map(|p| p.adapter.as_str());
+            let adapter = self.config.active_provider().map(|p| p.adapter.as_str());
             let provider_id =
                 PricingCatalog::map_provider_id(&self.home.conversation.provider, adapter);
             if let Some(ctx) = catalog.context_window(&provider_id, &self.home.conversation.model) {
@@ -1629,9 +1627,7 @@ impl<'a> App<'a> {
         let Some(sid) = acp.session_id().await else {
             error!("No active ACP session");
             if let Some(tx) = &self.action_tx {
-                let _ = tx.send(Event::StreamError(
-                    "No active ACP session".to_string(),
-                ));
+                let _ = tx.send(Event::StreamError("No active ACP session".to_string()));
             }
             return;
         };
