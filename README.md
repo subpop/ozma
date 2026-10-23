@@ -1,3 +1,5 @@
+![Crates.io Version](https://img.shields.io/crates/v/ozma)
+
 # ozma
 
 A terminal-based LLM chat client built with Rust.
