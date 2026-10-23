@@ -67,10 +67,14 @@ impl McpClient {
         let cancellation_token = Some(service.cancellation_token());
 
         // Get server info
-        if let Some(server_info) = service.peer_info() {
+        if let Some(server_info) = service
+            .peer_info()
+            .as_deref()
+            .and_then(|info| info.server_info.as_ref())
+        {
             info!(
                 "MCP server '{}' connected: {:?} {:?}",
-                config.name, server_info.server_info.name, server_info.server_info.version,
+                config.name, server_info.name, server_info.version,
             );
         }
 
@@ -128,10 +132,14 @@ impl McpClient {
         let peer = service.peer().clone();
         let cancellation_token = Some(service.cancellation_token());
 
-        if let Some(server_info) = service.peer_info() {
+        if let Some(server_info) = service
+            .peer_info()
+            .as_deref()
+            .and_then(|info| info.server_info.as_ref())
+        {
             info!(
                 "MCP server '{}' connected: {:?} {:?}",
-                config.name, server_info.server_info.name, server_info.server_info.version,
+                config.name, server_info.name, server_info.version,
             );
         }
 
