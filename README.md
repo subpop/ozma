@@ -70,11 +70,14 @@ default_source = "openai"
 default_persona = "ozma"
 
 # Providers ---------------------------------------------------------------
-# `adapter` is required for every provider.
-# `wire_protocol` is optional. It forces a specific request wire format
-# (`chat_completions`, `responses`, or `messages`) regardless of adapter.
-# When set, ozma preserves endpoint/auth defaults from `adapter` unless
-# you explicitly override `base_url` or `api_key_env`.
+# `adapter` is optional. When set, it acts as a shorthand for the provider's
+# base values: the default wire format, endpoint, and API key env var.
+# Explicit `wire_protocol`, `base_url`, and `api_key_env`/`api_key_cmd`
+# values take precedence over the adapter defaults.
+# When `adapter` is omitted, the provider must be fully defined:
+# `base_url`, `api_key_env` or `api_key_cmd`, and a concrete `wire_protocol`
+# (`chat_completions`, `responses`, or `messages`; "auto" is not allowed
+# without an adapter).
 # `models` is optional: if omitted, ozma will try to discover models from the provider API.
 
 [[provider]]
@@ -106,6 +109,17 @@ name = "local-ollama"
 adapter = "openai"
 models = ["llama3"]
 base_url = "http://localhost:11434/v1/"
+
+# A provider without `adapter` must be fully defined: base_url, an API key,
+# and a concrete wire_protocol. Useful for custom gateways when no genai
+# adapter matches.
+[[provider]]
+name = "my-gateway"
+base_url = "https://gateway.example.com/v1/"
+api_key_env = "GATEWAY_API_KEY"
+wire_protocol = "chat_completions"
+# api_key_cmd = "op read op://vault/gateway/credential"  # alternative to api_key_env
+# models omitted -> auto-discover
 
 [[provider]]
 name = "opencode-go"

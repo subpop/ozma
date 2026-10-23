@@ -934,7 +934,10 @@ impl<'a> App<'a> {
     fn record_usage(&mut self, usage: &TokenUsage) {
         self.home.conversation.add_usage(usage);
         if let Some(catalog) = &self.pricing {
-            let adapter = self.config.active_provider().map(|p| p.adapter.as_str());
+            let adapter = self
+                .config
+                .active_provider()
+                .and_then(|p| p.adapter.as_deref());
             let provider_id =
                 PricingCatalog::map_provider_id(&self.home.conversation.provider, adapter);
             if let Some(cost) =
@@ -948,7 +951,10 @@ impl<'a> App<'a> {
     /// Update the conversation's context window from the pricing catalog.
     fn update_context_window(&mut self) {
         if let Some(catalog) = &self.pricing {
-            let adapter = self.config.active_provider().map(|p| p.adapter.as_str());
+            let adapter = self
+                .config
+                .active_provider()
+                .and_then(|p| p.adapter.as_deref());
             let provider_id =
                 PricingCatalog::map_provider_id(&self.home.conversation.provider, adapter);
             if let Some(ctx) = catalog.context_window(&provider_id, &self.home.conversation.model) {

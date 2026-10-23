@@ -197,8 +197,16 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
 
     /// The protocol adapter to use (e.g. "openai", "anthropic", "gemini", "ollama",
-    /// "opencode_go"). Determines the default wire format and endpoint behavior.
-    pub adapter: String,
+    /// "opencode_go"). Acts as a shorthand for the provider's base values: the
+    /// default wire format, endpoint, and API key env var. Explicit `wire_protocol`,
+    /// `base_url`, and `api_key_env`/`api_key_cmd` values take precedence over
+    /// the adapter defaults.
+    ///
+    /// When omitted, the provider must be fully defined: `base_url`,
+    /// `api_key_env` or `api_key_cmd`, and a concrete `wire_protocol`
+    /// (`chat_completions`, `responses`, or `messages` — not `auto`).
+    #[serde(default)]
+    pub adapter: Option<String>,
 
     /// Optional wire protocol override for adapters that expose multiple protocols
     /// behind a single endpoint (e.g. OpenCode Go).
@@ -208,6 +216,9 @@ pub struct ProviderConfig {
     /// - "chat_completions"
     /// - "responses"
     /// - "messages"
+    ///
+    /// Required when `adapter` is omitted (and must not be "auto", since there
+    /// is no adapter-native protocol to fall back to).
     #[serde(default)]
     pub wire_protocol: Option<WireProtocol>,
 
@@ -281,6 +292,29 @@ impl Config {
                     provider.name
                 ));
             }
+
+            // Without an adapter there are no base-value defaults, so the
+            // provider must be fully defined.
+            if provider.adapter.is_none() {
+                let mut missing: Vec<&str> = Vec::new();
+                if provider.base_url.is_none() {
+                    missing.push("base_url");
+                }
+                if provider.api_key_env.is_none() && provider.api_key_cmd.is_none() {
+                    missing.push("api_key_env or api_key_cmd");
+                }
+                match provider.wire_protocol {
+                    None | Some(WireProtocol::Auto) => missing.push("wire_protocol"),
+                    Some(_) => {}
+                }
+                if !missing.is_empty() {
+                    return Err(eyre!(
+                        "Provider '{}' has no adapter and is missing: {} (set an adapter, or define the provider fully with base_url, an api key, and a concrete wire_protocol)",
+                        provider.name,
+                        missing.join(", ")
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -345,7 +379,7 @@ impl Default for Config {
                 api_key_env: None,
                 api_key_cmd: None,
                 base_url: None,
-                adapter: "gemini".to_string(),
+                adapter: Some("gemini".to_string()),
                 wire_protocol: None,
                 temperature: None,
                 top_p: None,
@@ -496,6 +530,99 @@ api_key_cmd = "echo secret"
         )
         .unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn adapter_less_provider_parses_and_validates() {
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "my-gateway"
+base_url = "https://gateway.example.com/v1/"
+api_key_env = "GATEWAY_API_KEY"
+wire_protocol = "chat_completions"
+models = ["some-model"]
+"#,
+        )
+        .unwrap();
+        assert!(config.validate().is_ok());
+        let provider = &config.provider[0];
+        assert_eq!(provider.adapter, None);
+        assert_eq!(provider.wire_protocol, Some(WireProtocol::ChatCompletions));
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://gateway.example.com/v1/")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_adapter_less_provider_missing_fields() {
+        let base = r#"
+[[provider]]
+name = "incomplete"
+"#;
+        // Missing everything.
+        let config: Config = toml::from_str(base).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("incomplete"));
+        assert!(err.contains("missing: base_url, api_key_env or api_key_cmd, wire_protocol"));
+
+        // base_url and key set, but wire_protocol missing.
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "incomplete"
+base_url = "https://gateway.example.com/v1/"
+api_key_env = "GATEWAY_API_KEY"
+"#,
+        )
+        .unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("missing: wire_protocol"));
+        assert!(!err.contains("missing: base_url"));
+
+        // wire_protocol set but no base_url.
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "incomplete"
+api_key_cmd = "echo secret"
+wire_protocol = "responses"
+"#,
+        )
+        .unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("missing: base_url"));
+
+        // No api key.
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "incomplete"
+base_url = "https://gateway.example.com/v1/"
+wire_protocol = "messages"
+"#,
+        )
+        .unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("missing: api_key_env or api_key_cmd"));
+    }
+
+    #[test]
+    fn validate_rejects_adapter_less_provider_with_auto_wire_protocol() {
+        let config: Config = toml::from_str(
+            r#"
+[[provider]]
+name = "auto-no-adapter"
+base_url = "https://gateway.example.com/v1/"
+api_key_env = "GATEWAY_API_KEY"
+wire_protocol = "auto"
+"#,
+        )
+        .unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("auto-no-adapter"));
+        assert!(err.contains("wire_protocol"));
     }
 
     #[test]

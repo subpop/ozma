@@ -42,8 +42,24 @@ pub struct Provider {
 }
 
 fn effective_adapter_kind(config: &ProviderConfig) -> Result<AdapterKind> {
-    let base = AdapterKind::from_lower_str(&config.adapter)
-        .ok_or_else(|| eyre!("Unknown adapter: {}", config.adapter))?;
+    let base = match &config.adapter {
+        Some(adapter) => AdapterKind::from_lower_str(adapter)
+            .ok_or_else(|| eyre!("Unknown adapter: {}", adapter))?,
+        // Without an adapter there are no adapter-native defaults; the wire
+        // protocol alone determines the kind. Validation guarantees a concrete
+        // protocol, but error defensively for configs that bypass it.
+        None => match config.wire_protocol {
+            Some(WireProtocol::ChatCompletions) => AdapterKind::OpenAI,
+            Some(WireProtocol::Responses) => AdapterKind::OpenAIResp,
+            Some(WireProtocol::Messages) => AdapterKind::Anthropic,
+            None | Some(WireProtocol::Auto) => {
+                return Err(eyre!(
+                    "Provider '{}' has no adapter and no concrete wire_protocol (expected chat_completions, responses, or messages)",
+                    config.name
+                ));
+            }
+        },
+    };
 
     match config.wire_protocol {
         None | Some(WireProtocol::Auto) => Ok(base),
@@ -67,7 +83,7 @@ pub(crate) async fn discover_models(config: &ProviderConfig) -> Vec<String> {
     debug!(
         "Discovering models for provider='{}' adapter='{}' wire_protocol={:?} effective_adapter='{}'",
         config.name,
-        config.adapter,
+        config.adapter.as_deref().unwrap_or("<none>"),
         config.wire_protocol,
         adapter_kind.as_lower_str()
     );
@@ -241,7 +257,7 @@ impl Provider {
                 "Preparing stream for provider='{}' model='{}' adapter='{}' wire_protocol={:?} effective_adapter='{}'",
                 self.name,
                 self.model,
-                self.provider_config.adapter,
+                self.provider_config.adapter.as_deref().unwrap_or("<none>"),
                 self.provider_config.wire_protocol,
                 kind.as_lower_str()
             ),
@@ -662,8 +678,8 @@ fn build_headers(
     );
 
     // Add any adapter-specific headers.
-    match config.adapter.as_str() {
-        "opencode_go" => {
+    match config.adapter.as_deref() {
+        Some("opencode_go") => {
             // Inject the conversation UUID for the OpenCode Go proxy so it can optimise
             // routing and prompt-cache affinity. Omitted until the conversation ID is
             // known (i.e. on initial client construction before a session is set).
@@ -723,15 +739,24 @@ async fn run_api_key_cmd(cmd: &str) -> std::result::Result<String, String> {
 
 /// Build a `genai::Client` from a provider config.
 fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Result<Client> {
-    let configured_adapter_kind = AdapterKind::from_lower_str(&config.adapter)
-        .ok_or_else(|| eyre!("Unknown adapter: {}", config.adapter))?;
+    let configured_adapter_kind = match &config.adapter {
+        Some(adapter) => Some(
+            AdapterKind::from_lower_str(adapter)
+                .ok_or_else(|| eyre!("Unknown adapter: {}", adapter))?,
+        ),
+        None => None,
+    };
     let adapter_kind = effective_adapter_kind(config)?;
-    let preserve_adapter_defaults = configured_adapter_kind != adapter_kind;
+    // Only preserve the configured adapter's endpoint/auth defaults when an
+    // adapter exists and wire_protocol remapped the effective kind. Adapter-less
+    // providers are fully explicit, so there is nothing to preserve.
+    let preserve_adapter_defaults =
+        configured_adapter_kind.is_some_and(|kind| kind != adapter_kind);
 
     debug!(
         "Building client for provider='{}' adapter='{}' wire_protocol={:?} effective_adapter='{}' conversation_id={} preserve_adapter_defaults={}",
         config.name,
-        config.adapter,
+        config.adapter.as_deref().unwrap_or("<none>"),
         config.wire_protocol,
         adapter_kind.as_lower_str(),
         conversation_id
@@ -762,11 +787,10 @@ fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Resul
         let api_key_env = config.api_key_env.clone();
         let api_key_cmd = config.api_key_cmd.clone();
         let adapter_default_auth_env = configured_adapter_kind
-            .default_key_env_name()
-            .map(ToString::to_string);
+            .and_then(|kind| kind.default_key_env_name().map(ToString::to_string));
         let adapter_default_base_url = if preserve_adapter_defaults && config.base_url.is_none() {
-            match config.adapter.as_str() {
-                "opencode_go" => Some("https://opencode.ai/zen/go/v1/".to_string()),
+            match config.adapter.as_deref() {
+                Some("opencode_go") => Some("https://opencode.ai/zen/go/v1/".to_string()),
                 _ => None,
             }
         } else {
@@ -826,14 +850,17 @@ fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Resul
 mod tests {
     use super::*;
 
-    fn provider_config(adapter: &str, wire_protocol: Option<WireProtocol>) -> ProviderConfig {
+    fn provider_config(
+        adapter: Option<&str>,
+        wire_protocol: Option<WireProtocol>,
+    ) -> ProviderConfig {
         ProviderConfig {
             name: "test".to_string(),
             models: Some(vec!["model".to_string()]),
             api_key_env: None,
             api_key_cmd: None,
             base_url: None,
-            adapter: adapter.to_string(),
+            adapter: adapter.map(|s| s.to_string()),
             wire_protocol,
             temperature: None,
             top_p: None,
@@ -844,7 +871,7 @@ mod tests {
 
     #[test]
     fn effective_adapter_kind_defaults_to_adapter() {
-        let config = provider_config("opencode_go", None);
+        let config = provider_config(Some("opencode_go"), None);
         assert_eq!(
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::OpenCodeGo
@@ -853,19 +880,19 @@ mod tests {
 
     #[test]
     fn effective_adapter_kind_supports_opencode_protocol_overrides() {
-        let config = provider_config("opencode_go", Some(WireProtocol::ChatCompletions));
+        let config = provider_config(Some("opencode_go"), Some(WireProtocol::ChatCompletions));
         assert_eq!(
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::OpenAI
         );
 
-        let config = provider_config("opencode_go", Some(WireProtocol::Responses));
+        let config = provider_config(Some("opencode_go"), Some(WireProtocol::Responses));
         assert_eq!(
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::OpenAIResp
         );
 
-        let config = provider_config("opencode_go", Some(WireProtocol::Messages));
+        let config = provider_config(Some("opencode_go"), Some(WireProtocol::Messages));
         assert_eq!(
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::Anthropic
@@ -874,11 +901,53 @@ mod tests {
 
     #[test]
     fn effective_adapter_kind_allows_wire_protocol_for_other_adapters() {
-        let config = provider_config("openai", Some(WireProtocol::Responses));
+        let config = provider_config(Some("openai"), Some(WireProtocol::Responses));
         assert_eq!(
             effective_adapter_kind(&config).unwrap(),
             AdapterKind::OpenAIResp
         );
+    }
+
+    #[test]
+    fn effective_adapter_kind_without_adapter_uses_wire_protocol() {
+        let config = provider_config(None, Some(WireProtocol::ChatCompletions));
+        assert_eq!(
+            effective_adapter_kind(&config).unwrap(),
+            AdapterKind::OpenAI
+        );
+
+        let config = provider_config(None, Some(WireProtocol::Responses));
+        assert_eq!(
+            effective_adapter_kind(&config).unwrap(),
+            AdapterKind::OpenAIResp
+        );
+
+        let config = provider_config(None, Some(WireProtocol::Messages));
+        assert_eq!(
+            effective_adapter_kind(&config).unwrap(),
+            AdapterKind::Anthropic
+        );
+    }
+
+    #[test]
+    fn effective_adapter_kind_errors_without_adapter_and_concrete_wire_protocol() {
+        let config = provider_config(None, None);
+        let err = effective_adapter_kind(&config).unwrap_err().to_string();
+        assert!(err.contains("no adapter"));
+
+        let config = provider_config(None, Some(WireProtocol::Auto));
+        assert!(effective_adapter_kind(&config).is_err());
+    }
+
+    #[test]
+    fn build_client_supports_adapter_less_provider() {
+        let config = ProviderConfig {
+            base_url: Some("https://gateway.example.com/v1/".to_string()),
+            api_key_env: Some("GATEWAY_API_KEY".to_string()),
+            wire_protocol: Some(WireProtocol::ChatCompletions),
+            ..provider_config(None, None)
+        };
+        assert!(build_client(&config, None).is_ok());
     }
 
     #[tokio::test]
