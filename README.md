@@ -2,6 +2,8 @@
 
 A terminal-based LLM chat client built with Rust.
 
+![ozma.png](./docs/ozma.png)
+
 ozma provides a keyboard-driven TUI for conversing with large language models, with support for multiple providers, personas, multimodal input, tool use, MCP servers, session persistence, and context compaction.
 
 ## Features
