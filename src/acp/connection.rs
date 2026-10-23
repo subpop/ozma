@@ -7,17 +7,16 @@ use std::sync::Arc;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
-    CreateTerminalResponse, DeleteSessionRequest, EnvVariable, FileSystemCapabilities,
-    Implementation, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
-    ListSessionsRequest, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
-    PromptRequest, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
-    ReleaseTerminalResponse, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
-    TerminalExitStatus, TerminalId, TerminalOutputRequest, TerminalOutputResponse,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
+    CreateTerminalResponse, DeleteSessionRequest, FileSystemCapabilities, Implementation,
+    InitializeRequest, KillTerminalRequest, KillTerminalResponse, ListSessionsRequest,
+    LoadSessionRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
+    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionNotification, TerminalExitStatus, TerminalId,
+    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
-use agent_client_protocol::{AcpAgent, Agent, Client, ConnectionTo};
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo};
 use color_eyre::eyre::{Result, eyre};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -758,17 +757,10 @@ impl Drop for AcpConnection {
 }
 
 fn build_acp_agent(agent: &AgentConfig) -> Result<AcpAgent> {
-    let env: Vec<EnvVariable> = agent
-        .env
-        .iter()
-        .map(|(k, v)| EnvVariable::new(k.clone(), v.clone()))
-        .collect();
-    let server = agent_client_protocol::schema::v1::McpServer::Stdio(
-        agent_client_protocol::schema::v1::McpServerStdio::new(agent.name.clone(), &agent.command)
-            .args(agent.args.clone())
-            .env(env),
-    );
-    Ok(AcpAgent::new(server))
+    let config = AcpAgentConfig::new(&agent.command)
+        .args(agent.args.clone())
+        .envs(agent.env.iter());
+    Ok(AcpAgent::new(config))
 }
 
 fn map_tool_kind_to_permission(kind: &str) -> PermissionLevel {
