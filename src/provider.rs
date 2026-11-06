@@ -737,6 +737,20 @@ async fn run_api_key_cmd(cmd: &str) -> std::result::Result<String, String> {
     Ok(key)
 }
 
+/// Ensure a base URL ends with `/` so genai's RFC 3986 `Url::join` of the
+/// service path ("chat/completions", "responses", ...) appends to the path
+/// instead of replacing its last segment (".../v1" + "responses" would
+/// otherwise resolve to ".../responses"). Query strings are preserved.
+fn normalize_base_url(url: &str) -> String {
+    if url.ends_with('/') {
+        return url.to_string();
+    }
+    match url.rsplit_once('?') {
+        Some((path, query)) => format!("{path}/?{query}"),
+        None => format!("{url}/"),
+    }
+}
+
 /// Build a `genai::Client` from a provider config.
 fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Result<Client> {
     let configured_adapter_kind = match &config.adapter {
@@ -783,7 +797,10 @@ fn build_client(config: &ProviderConfig, conversation_id: Option<Uuid>) -> Resul
         || config.api_key_cmd.is_some()
         || preserve_adapter_defaults
     {
-        let base_url = config.base_url.clone();
+        // genai joins the service path onto the endpoint with RFC 3986
+        // relative resolution, which drops the last path segment when the URL
+        // has no trailing slash; normalize so ".../v1" behaves like ".../v1/".
+        let base_url = config.base_url.as_deref().map(normalize_base_url);
         let api_key_env = config.api_key_env.clone();
         let api_key_cmd = config.api_key_cmd.clone();
         let adapter_default_auth_env = configured_adapter_kind
@@ -948,6 +965,39 @@ mod tests {
             ..provider_config(None, None)
         };
         assert!(build_client(&config, None).is_ok());
+    }
+
+    #[test]
+    fn url_join_without_trailing_slash_replaces_last_segment() {
+        // Documents why normalize_base_url exists: genai resolves the service
+        // suffix against the base URL with RFC 3986 relative resolution.
+        let joined = reqwest::Url::parse("https://api.example.com/v1")
+            .unwrap()
+            .join("responses")
+            .unwrap();
+        assert_eq!(joined.as_str(), "https://api.example.com/responses");
+
+        let joined = reqwest::Url::parse("https://api.example.com/v1/")
+            .unwrap()
+            .join("responses")
+            .unwrap();
+        assert_eq!(joined.as_str(), "https://api.example.com/v1/responses");
+    }
+
+    #[test]
+    fn normalize_base_url_appends_trailing_slash() {
+        assert_eq!(
+            normalize_base_url("https://api.example.com/v1"),
+            "https://api.example.com/v1/"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1/"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.example.com/v1?key=x"),
+            "https://api.example.com/v1/?key=x"
+        );
     }
 
     #[tokio::test]
