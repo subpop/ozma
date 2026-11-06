@@ -221,7 +221,7 @@ Each persona sets its own system prompt. Environment context (cwd, platform, dat
 | `Ctrl+V` | Paste image from clipboard (or text if no image) |
 | `@path` + `Tab` | Attach an image or inline a text file |
 | `Esc` | Clear input (or dismiss `@` completion) |
-| `Up` / `Down` | Message history (when on first/last line) |
+| `Up` / `Down` | Move cursor (wraps visually); message history at top/bottom edge |
 | `PageUp` / `PageDown` | Scroll conversation |
 
 Mouse wheel scrolls the conversation; click a message or code block to select it for `Ctrl+C`.

@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 use ratatui_image::{Resize, picker::Picker, protocol::Protocol};
-use tui_textarea::TextArea;
+use tui_textarea::{TextArea, WrapMode};
 use uuid::Uuid;
 
 use crate::action::Action;
@@ -39,7 +39,8 @@ const ATTACHMENT_MARKER: char = '📎';
 /// - Ctrl+Q: quit the application
 /// - Ctrl+C: copy selected block to clipboard
 /// - Esc: clear the input (if non-empty)
-/// - Up/Down: navigate through sent message history (when on first/last line)
+/// - Up/Down: move the cursor (visually across wrapped lines); at the top/bottom
+///   edge, navigate through sent message history
 /// Height of the attachment preview bar (rows).
 const ATTACHMENT_BAR_HEIGHT: u16 = 3;
 
@@ -82,6 +83,8 @@ pub struct Input<'a> {
 impl<'a> Input<'a> {
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
+        // Wrap long lines within the box instead of scrolling horizontally.
+        textarea.set_wrap_mode(WrapMode::WordOrGlyph);
         textarea.set_cursor_line_style(Style::default());
         textarea.set_placeholder_text("Type a message... (Enter to send, Alt+Enter for newline)");
         textarea.set_block(
@@ -179,16 +182,6 @@ impl<'a> Input<'a> {
         self.textarea.select_all();
         self.textarea.cut();
         self.textarea.insert_str(text);
-    }
-
-    /// Whether the cursor is on the first line of the textarea.
-    fn cursor_on_first_line(&self) -> bool {
-        self.textarea.cursor().0 == 0
-    }
-
-    /// Whether the cursor is on the last line of the textarea.
-    fn cursor_on_last_line(&self) -> bool {
-        self.textarea.cursor().0 == self.textarea.lines().len().saturating_sub(1)
     }
 
     /// Navigate to the previous history entry (Up).
@@ -838,20 +831,24 @@ impl Component for Input<'_> {
                 Action::Noop
             }
 
-            // Up arrow: navigate to previous history entry (when on first line)
-            (KeyCode::Up, m) if m.is_empty() && self.cursor_on_first_line() => {
-                if !self.history_prev() {
-                    // No history to navigate — let textarea handle it
-                    self.textarea.input(key);
+            // Up arrow: move the cursor up; at the top edge, browse history.
+            (KeyCode::Up, m) if m.is_empty() => {
+                let before = self.textarea.cursor();
+                self.textarea.input(key);
+                if self.textarea.cursor() == before {
+                    // Cursor was already at the top (first visual row).
+                    self.history_prev();
                 }
                 Action::Noop
             }
 
-            // Down arrow: navigate to next history entry (when on last line)
-            (KeyCode::Down, m) if m.is_empty() && self.cursor_on_last_line() => {
-                if !self.history_next() {
-                    // No history navigation — let textarea handle it
-                    self.textarea.input(key);
+            // Down arrow: move the cursor down; at the bottom edge, browse history.
+            (KeyCode::Down, m) if m.is_empty() => {
+                let before = self.textarea.cursor();
+                self.textarea.input(key);
+                if self.textarea.cursor() == before {
+                    // Cursor was already at the bottom (last visual row).
+                    self.history_next();
                 }
                 Action::Noop
             }
@@ -1032,5 +1029,172 @@ impl Input<'_> {
             ),
         ]));
         frame.render_widget(label, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn plain_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn type_text(input: &mut Input<'_>, text: &str) {
+        for ch in text.chars() {
+            input.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()));
+        }
+    }
+
+    /// Render the input at the given width so the textarea learns its wrap width.
+    fn render_at(input: &mut Input<'_>, width: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+        terminal
+            .draw(|frame| input.render(frame, frame.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn wrap_mode_is_enabled() {
+        let input = Input::new();
+        assert_eq!(input.textarea.wrap_mode(), WrapMode::WordOrGlyph);
+    }
+
+    #[test]
+    fn long_line_is_drawn_wrapped_not_horizontally_scrolled() {
+        let mut input = Input::new();
+        type_text(&mut input, "aaaa bbbb cccc dddd eeee ffff gggg hhhh");
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        terminal
+            .draw(|frame| input.render(frame, frame.area()))
+            .unwrap();
+
+        // Collect the text drawn inside the box (skip border rows/cols).
+        let buf = terminal.backend().buffer();
+        let mut rows: Vec<String> = Vec::new();
+        for y in 1..9 {
+            let mut row = String::new();
+            for x in 1..19 {
+                row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            rows.push(row.trim_end().to_string());
+        }
+        let non_empty: Vec<&String> = rows.iter().filter(|r| !r.is_empty()).collect();
+
+        // A 39-char line in an 18-col inner area must occupy more than one drawn row.
+        assert!(
+            non_empty.len() > 1,
+            "long line should wrap across multiple rows, drew: {non_empty:?}"
+        );
+        // No horizontal scrolling: the start of the text must remain visible.
+        assert!(
+            rows.iter().any(|r| r.starts_with("aaaa")),
+            "text start must stay visible, drew: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn up_arrow_moves_cursor_within_wrapped_line() {
+        let mut input = Input::new();
+        input.push_history("a sent message");
+
+        // One logical line long enough to wrap at a 20-column width.
+        type_text(&mut input, "aaaa bbbb cccc dddd eeee ffff gggg hhhh");
+        render_at(&mut input, 20);
+
+        // The cursor sits on a later visual row of the single logical line.
+        assert_eq!(input.textarea.cursor().0, 0);
+
+        // Up moves the cursor visually within the wrapped line, not to history.
+        let before = input.textarea.cursor();
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, None, "must not browse history");
+        assert_ne!(
+            input.textarea.cursor(),
+            before,
+            "cursor must move up visually"
+        );
+
+        // Down moves back down without history navigation.
+        let before = input.textarea.cursor();
+        input.handle_key_event(plain_key(KeyCode::Down));
+        assert_eq!(input.history_index, None, "must not browse history");
+        assert_ne!(
+            input.textarea.cursor(),
+            before,
+            "cursor must move down visually"
+        );
+    }
+
+    #[test]
+    fn up_arrow_at_top_edge_browses_history() {
+        let mut input = Input::new();
+        input.push_history("first message");
+        input.push_history("second message");
+        render_at(&mut input, 40);
+
+        // Cursor is at the top-left corner: Up browses history.
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, Some(1));
+        assert_eq!(input.current_text(), "second message");
+
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, Some(0));
+        assert_eq!(input.current_text(), "first message");
+
+        // Already at the oldest entry: nothing changes.
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, Some(0));
+
+        // Down walks back toward the draft.
+        input.handle_key_event(plain_key(KeyCode::Down));
+        assert_eq!(input.history_index, Some(1));
+        input.handle_key_event(plain_key(KeyCode::Down));
+        assert_eq!(input.history_index, None);
+        assert_eq!(input.current_text(), "");
+    }
+
+    #[test]
+    fn down_arrow_at_bottom_edge_browses_history() {
+        let mut input = Input::new();
+        input.push_history("old message");
+        render_at(&mut input, 40);
+
+        // Cursor on the last (only) line: Down has nowhere to go, so it stays
+        // at the draft (no history index to advance from).
+        input.handle_key_event(plain_key(KeyCode::Down));
+        assert_eq!(input.history_index, None);
+        assert_eq!(input.current_text(), "");
+
+        // Now browse up into history first, then Down returns to the draft.
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.current_text(), "old message");
+        input.handle_key_event(plain_key(KeyCode::Down));
+        assert_eq!(input.history_index, None);
+        assert_eq!(input.current_text(), "");
+    }
+
+    #[test]
+    fn up_arrow_on_multiline_draft_moves_between_lines() {
+        let mut input = Input::new();
+        input.push_history("history");
+
+        type_text(&mut input, "line one");
+        input.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        type_text(&mut input, "line two");
+        render_at(&mut input, 40);
+
+        // Cursor on the second logical line: Up moves to the first line.
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, None, "must not browse history");
+        assert_eq!(input.textarea.cursor().0, 0);
+
+        // Cursor now on the first line: Up browses history.
+        input.handle_key_event(plain_key(KeyCode::Up));
+        assert_eq!(input.history_index, Some(0));
+        assert_eq!(input.current_text(), "history");
     }
 }
