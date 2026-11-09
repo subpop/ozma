@@ -26,6 +26,8 @@ const IMAGE_DISPLAY_HEIGHT: u16 = 12;
 
 /// Number of lines to show from an inlined `<file>` block before truncating.
 const FILE_PREVIEW_LINES: usize = 10;
+/// Max characters shown for collapsed tool output previews.
+const TOOL_PREVIEW_CHARS: usize = 500;
 
 /// A segment within a rendered message: either text or an image.
 enum MessageSegment {
@@ -41,12 +43,25 @@ enum MessageSegment {
 
 /// A rendered message block with its computed height and role metadata.
 struct MessageBlock {
+    message_id: Uuid,
     segments: Vec<MessageSegment>,
     role: Role,
     /// Total height including borders/padding if applicable.
     total_height: u16,
     /// Raw text content of the message (for copying to clipboard).
     raw_content: String,
+    /// Optional metadata for the clickable tool output footer line.
+    tool_toggle_footer: Option<ToolToggleFooter>,
+}
+
+/// Metadata for a clickable tool-output footer line inside a text segment.
+struct ToolToggleFooter {
+    /// Line index in the rendered `Text`.
+    line_index: usize,
+    /// Start column (in text cells) of the clickable label on that line.
+    label_col_start: usize,
+    /// Label width (in text cells).
+    label_width: usize,
 }
 
 /// Displays the conversation messages in a scrollable view.
@@ -75,6 +90,8 @@ pub struct ConversationView {
     /// Message IDs where inlined `<file>` blocks are shown expanded.
     /// Default: collapsed (showing first FILE_PREVIEW_LINES).
     expanded_files: HashSet<Uuid>,
+    /// Tool message IDs where output previews are expanded to full output.
+    expanded_tool_results: HashSet<Uuid>,
     /// Absolute Y positions of each code block's first line across the full conversation.
     /// Recomputed on each render pass.
     code_block_positions: Vec<(u16, CodeBlock)>,
@@ -83,6 +100,9 @@ pub struct ConversationView {
     message_block_positions: Vec<MessageBlockPosition>,
     /// The currently selected block (message or code block).
     selected: Option<Selection>,
+    /// Click targets for tool footer labels ("More..." / "Collapse").
+    /// Recomputed on each render pass.
+    tool_toggle_targets: Vec<ToolToggleTarget>,
     /// The Y offset of the conversation area on screen (set during render).
     render_area_y: u16,
 }
@@ -107,6 +127,14 @@ struct MessageBlockPosition {
     content: String,
 }
 
+/// Screen-space click target for tool footer labels.
+struct ToolToggleTarget {
+    message_id: Uuid,
+    x_start: u16,
+    x_end: u16,
+    y: u16,
+}
+
 /// Spacing between messages (blank lines).
 const MESSAGE_GAP: u16 = 1;
 
@@ -124,9 +152,11 @@ impl ConversationView {
             picker,
             image_cache: HashMap::new(),
             expanded_files: HashSet::new(),
+            expanded_tool_results: HashSet::new(),
             code_block_positions: Vec::new(),
             message_block_positions: Vec::new(),
             selected: None,
+            tool_toggle_targets: Vec::new(),
             render_area_y: 0,
         }
     }
@@ -142,9 +172,11 @@ impl ConversationView {
         self.anim_tick = 0;
         self.image_cache.clear();
         self.expanded_files.clear();
+        self.expanded_tool_results.clear();
         self.code_block_positions.clear();
         self.message_block_positions.clear();
         self.selected = None;
+        self.tool_toggle_targets.clear();
     }
 
     /// Enable auto-scroll (called when new content arrives).
@@ -192,19 +224,34 @@ impl ConversationView {
         }
     }
 
+    fn line_height(line: &Line<'_>, content_width: u16) -> u16 {
+        let line_width = line.width() as u16;
+        if content_width == 0 || line_width == 0 {
+            1
+        } else {
+            (line_width.saturating_sub(1) / content_width) + 1
+        }
+    }
+
     /// Estimate the height (in terminal rows) of a `Text` block given a content width.
     fn text_height(text: &Text<'_>, content_width: u16) -> u16 {
         text.lines
             .iter()
-            .map(|line| {
-                let line_width = line.width() as u16;
-                if content_width == 0 || line_width == 0 {
-                    1
-                } else {
-                    (line_width.saturating_sub(1) / content_width) + 1
-                }
-            })
+            .map(|line| Self::line_height(line, content_width))
             .sum()
+    }
+
+    /// Return a preview string truncated to at most `max_chars` unicode scalar values.
+    fn truncate_preview(text: &str, max_chars: usize) -> String {
+        let total_chars = text.chars().count();
+        if total_chars <= max_chars {
+            return text.to_string();
+        }
+
+        text.chars()
+            .take(max_chars.saturating_sub(3))
+            .collect::<String>()
+            + "..."
     }
 
     /// Collapse `<file path="...">...</file>` blocks in text to show only
@@ -350,7 +397,8 @@ impl ConversationView {
         msg: &Message,
         content_width: u16,
         anim_tick: u8,
-        expanded: bool,
+        expanded_files: bool,
+        expanded_tool_output: bool,
     ) -> MessageBlock {
         if msg.compacted {
             let text = Text::from(Line::from(Span::styled(
@@ -358,6 +406,7 @@ impl ConversationView {
                 theme::DIMMED_STYLE,
             )));
             return MessageBlock {
+                message_id: msg.id,
                 total_height: 1,
                 segments: vec![MessageSegment::Text {
                     text,
@@ -365,6 +414,7 @@ impl ConversationView {
                 }],
                 role: msg.role.clone(),
                 raw_content: String::new(),
+                tool_toggle_footer: None,
             };
         }
 
@@ -372,6 +422,7 @@ impl ConversationView {
         let has_images = msg.has_images();
 
         let mut extracted_code_blocks: Vec<CodeBlock> = Vec::new();
+        let mut tool_toggle_footer: Option<ToolToggleFooter> = None;
 
         let text = if content_text.is_empty() && msg.streaming {
             Text::from(Line::from(Span::styled(
@@ -439,7 +490,7 @@ impl ConversationView {
                     rendered
                 }
                 Role::User => {
-                    let display_text = if expanded {
+                    let display_text = if expanded_files {
                         content_text.clone()
                     } else {
                         Self::collapse_file_blocks(&content_text)
@@ -484,17 +535,8 @@ impl ConversationView {
 
                     let icon = if success { "✓" } else { "✗" };
                     let icon_color = if success { Color::Green } else { Color::Red };
-
-                    // Truncate long tool output for display
-                    let content_display = if content_text.len() > 500 {
-                        format!(
-                            "{}...\n[{} bytes total]",
-                            &content_text[..497],
-                            content_text.len()
-                        )
-                    } else {
-                        content_text.clone()
-                    };
+                    let is_truncated = content_text.chars().count() > TOOL_PREVIEW_CHARS;
+                    let show_preview = is_truncated && !expanded_tool_output;
 
                     let mut lines = vec![Line::from(vec![
                         Span::styled(
@@ -508,11 +550,57 @@ impl ConversationView {
                         Span::styled(" result:", ratatui::style::Style::new().dim()),
                     ])];
 
-                    for line in content_display.lines() {
+                    let body_text = if show_preview {
+                        Self::truncate_preview(&content_text, TOOL_PREVIEW_CHARS)
+                    } else {
+                        content_text.clone()
+                    };
+
+                    for line in body_text.lines() {
                         lines.push(Line::from(Span::styled(
                             format!("  {}", line),
                             ratatui::style::Style::new().dim(),
                         )));
+                    }
+
+                    if show_preview {
+                        let bytes_text = format!("{} bytes total", content_text.len());
+                        let label = "More...";
+                        let label_col_start = format!("  [{}] ", bytes_text).chars().count();
+                        lines.push(Line::from(vec![
+                            Span::styled("  [", ratatui::style::Style::new().dim()),
+                            Span::styled(bytes_text.clone(), ratatui::style::Style::new().dim()),
+                            Span::styled("] ", ratatui::style::Style::new().dim()),
+                            Span::styled(
+                                label,
+                                ratatui::style::Style::new().fg(Color::Cyan).underlined(),
+                            ),
+                            Span::styled(" (click to expand)", ratatui::style::Style::new().dim()),
+                        ]));
+                        tool_toggle_footer = Some(ToolToggleFooter {
+                            line_index: lines.len().saturating_sub(1),
+                            label_col_start,
+                            label_width: label.chars().count(),
+                        });
+                    } else if is_truncated {
+                        let label = "Collapse";
+                        let label_col_start = 2;
+                        lines.push(Line::from(vec![
+                            Span::styled("  ", ratatui::style::Style::new().dim()),
+                            Span::styled(
+                                label,
+                                ratatui::style::Style::new().fg(Color::Cyan).underlined(),
+                            ),
+                            Span::styled(
+                                " (click to collapse)",
+                                ratatui::style::Style::new().dim(),
+                            ),
+                        ]));
+                        tool_toggle_footer = Some(ToolToggleFooter {
+                            line_index: lines.len().saturating_sub(1),
+                            label_col_start,
+                            label_width: label.chars().count(),
+                        });
                     }
 
                     Text::from(lines)
@@ -551,10 +639,12 @@ impl ConversationView {
         };
 
         MessageBlock {
+            message_id: msg.id,
             segments,
             role: msg.role.clone(),
             total_height,
             raw_content: content_text,
+            tool_toggle_footer,
         }
     }
 
@@ -635,8 +725,15 @@ impl ConversationView {
                     Role::User => user_content_width,
                     _ => assistant_content_width,
                 };
-                let expanded = self.expanded_files.contains(&msg.id);
-                Self::build_message_block(msg, width, anim_tick, expanded)
+                let expanded_files = self.expanded_files.contains(&msg.id);
+                let expanded_tool_output = self.expanded_tool_results.contains(&msg.id);
+                Self::build_message_block(
+                    msg,
+                    width,
+                    anim_tick,
+                    expanded_files,
+                    expanded_tool_output,
+                )
             })
             .collect();
 
@@ -648,6 +745,7 @@ impl ConversationView {
         // Collect absolute Y positions of all code blocks and message blocks.
         self.code_block_positions.clear();
         self.message_block_positions.clear();
+        self.tool_toggle_targets.clear();
         let mut abs_y: u16 = 0;
         for block in &blocks {
             // Track message block position for mouse hit-testing.
@@ -841,7 +939,7 @@ impl ConversationView {
                 // When selected, show a left accent bar.
                 let mut seg_y = y_pos;
 
-                for segment in &block.segments {
+                for (seg_idx, segment) in block.segments.iter().enumerate() {
                     match segment {
                         MessageSegment::Text { text, .. } => {
                             let seg_h = Self::text_height(text, assistant_content_width);
@@ -880,6 +978,35 @@ impl ConversationView {
                                         .wrap(Wrap { trim: false })
                                         .scroll((clip_top, 0));
                                     frame.render_widget(paragraph, msg_area);
+
+                                    if seg_idx == 0 {
+                                        if let Some(footer) = &block.tool_toggle_footer {
+                                            let mut footer_row_offset: u16 = 0;
+                                            for line in text.lines.iter().take(footer.line_index) {
+                                                footer_row_offset += Self::line_height(
+                                                    line,
+                                                    assistant_content_width,
+                                                );
+                                            }
+
+                                            let footer_abs_row = seg_top + footer_row_offset as i32;
+                                            if footer_abs_row >= 0
+                                                && (footer_abs_row as u16) < msg_inner.height
+                                            {
+                                                let text_x = msg_inner.x + 1;
+                                                let x_start = text_x
+                                                    .saturating_add(footer.label_col_start as u16);
+                                                let x_end = x_start
+                                                    .saturating_add(footer.label_width as u16);
+                                                self.tool_toggle_targets.push(ToolToggleTarget {
+                                                    message_id: block.message_id,
+                                                    x_start,
+                                                    x_end,
+                                                    y: msg_inner.y + footer_abs_row as u16,
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             seg_y += seg_h as i32;
@@ -989,7 +1116,20 @@ impl Component for ConversationView {
                 self.scroll_offset = self.max_scroll();
                 None
             }
-            Action::ClickAt(_col, row) => {
+            Action::ClickAt(col, row) => {
+                // First, check if the click lands on a tool footer label.
+                if let Some(hit) = self
+                    .tool_toggle_targets
+                    .iter()
+                    .find(|t| *row == t.y && *col >= t.x_start && *col < t.x_end)
+                {
+                    if !self.expanded_tool_results.remove(&hit.message_id) {
+                        self.expanded_tool_results.insert(hit.message_id);
+                    }
+                    self.selected = None;
+                    return None;
+                }
+
                 // Map the screen row to an absolute content position.
                 let abs_y = self.scroll_offset + row.saturating_sub(self.render_area_y);
 
