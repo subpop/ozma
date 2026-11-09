@@ -190,6 +190,14 @@ pub enum Action {
     /// Pricing catalog loaded from models.dev
     PricingLoaded(PricingCatalog),
 
+    // -- MCP log view --
+    /// Open the MCP server log overlay
+    OpenMcpLog,
+    /// Close the MCP server log overlay
+    CloseMcpLog,
+    /// Append a captured stderr line from an MCP server to the log view
+    McpLogAppend { server: String, line: String },
+
     // -- ACP display / replay --
     /// Show an ACP tool call in the conversation.
     AcpToolCallDisplay(ToolCallInfo),

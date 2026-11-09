@@ -5,10 +5,17 @@ use rmcp::{
     service::{RoleClient, RunningService},
     transport::{IntoTransport, TokioChildProcess},
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, info};
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, info, warn};
 
 use crate::config::McpServerConfig;
+use crate::event::Event;
+
+/// Cap the length of a single retained stderr line. Some servers emit very
+/// long lines (stack traces, JSON dumps); keep memory usage bounded.
+const MAX_LINE_LEN: usize = 4096;
 
 /// A connected MCP server client. Owns the rmcp `RunningService`.
 pub struct McpClient {
@@ -25,16 +32,25 @@ pub struct McpClient {
 impl McpClient {
     /// Connect to an MCP server using the given config.
     /// Performs the initialization handshake and lists available tools.
-    pub async fn connect(config: &McpServerConfig) -> Result<Self> {
+    /// `event_tx` receives captured stderr lines as `Event::McpLog`.
+    pub async fn connect(
+        config: &McpServerConfig,
+        event_tx: &UnboundedSender<Event>,
+    ) -> Result<Self> {
         match config.transport.as_str() {
-            "stdio" => Self::connect_stdio(config).await,
+            "stdio" => Self::connect_stdio(config, event_tx).await,
             "http" => Self::connect_http(config).await,
             other => Err(eyre!("Unknown MCP transport: {}", other)),
         }
     }
 
     /// Connect to an MCP server via stdio (child process) transport.
-    async fn connect_stdio(config: &McpServerConfig) -> Result<Self> {
+    /// The child's stderr is piped (not inherited) so server output cannot
+    /// corrupt the TUI; lines are logged and forwarded as `Event::McpLog`.
+    async fn connect_stdio(
+        config: &McpServerConfig,
+        event_tx: &UnboundedSender<Event>,
+    ) -> Result<Self> {
         let command = config.command.as_ref().ok_or_else(|| {
             eyre!(
                 "MCP server '{}': 'command' is required for stdio transport",
@@ -55,8 +71,16 @@ impl McpClient {
             cmd.env(key, value);
         }
 
-        let transport = TokioChildProcess::new(cmd)
+        let (transport, stderr) = TokioChildProcess::builder(cmd)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .map_err(|e| eyre!("Failed to spawn MCP server '{}': {}", config.name, e))?;
+
+        if let Some(stderr) = stderr {
+            let name = config.name.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(forward_stderr(name, stderr, event_tx));
+        }
 
         Self::connect_with_transport(&config.name, transport).await
     }
@@ -179,6 +203,50 @@ impl McpClient {
     }
 }
 
+/// Read a stdio MCP server's stderr to EOF, logging every line and
+/// forwarding it as `Event::McpLog`. Empty lines are skipped and overly
+/// long lines are truncated so a chatty or pathological server cannot
+/// grow memory without bound.
+async fn forward_stderr<S>(name: String, mut stderr: S, event_tx: UnboundedSender<Event>)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(&mut stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => break, // EOF or error: server went away
+            Ok(_) => {
+                let text = line.trim_end_matches(['\n', '\r']);
+                let text = if text.len() > MAX_LINE_LEN {
+                    // Byte-slice at a char boundary to avoid panicking
+                    // on multi-byte UTF-8 stderr output.
+                    let mut end = MAX_LINE_LEN;
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    warn!(
+                        "[mcp:{}] stderr line truncated ({} bytes)",
+                        name,
+                        text.len()
+                    );
+                    &text[..end]
+                } else {
+                    text
+                };
+                if !text.is_empty() {
+                    info!("[mcp:{}] {}", name, text);
+                    let _ = event_tx.send(Event::McpLog {
+                        server: name.clone(),
+                        line: text.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +256,86 @@ mod tests {
     };
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    /// End-to-end: `connect_stdio` must pipe (not inherit) the child's
+    /// stderr. Here the "server" is a shell that writes a stderr line and
+    /// exits without speaking MCP — the handshake fails, but the line must
+    /// still be captured as an event rather than leaking to the terminal.
+    #[tokio::test]
+    async fn connect_stdio_pipes_child_stderr() {
+        let (event_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let cfg = crate::config::McpServerConfig {
+            name: "noisy".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("sh".to_string()),
+            args: vec!["-c".to_string(), "echo noisy-stderr-line >&2".to_string()],
+            env: std::collections::HashMap::new(),
+            url: None,
+        };
+
+        // The handshake fails (the child speaks no MCP) — that's expected;
+        // we only care that its stderr was captured along the way.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            McpClient::connect(&cfg, &event_tx),
+        )
+        .await
+        .expect("connect should terminate (handshake failure)");
+        assert!(
+            result.is_err(),
+            "handshake with a non-MCP process must fail"
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("captured stderr line should arrive")
+            .expect("reader task should still be alive");
+        match event {
+            Event::McpLog { server, line } => {
+                assert_eq!(server, "noisy");
+                assert_eq!(line, "noisy-stderr-line");
+            }
+            other => panic!("expected Event::McpLog, got {other:?}"),
+        }
+    }
+
+    /// Regression test: stdio MCP servers used to inherit the TUI's stderr,
+    /// so their output printed over the ratatui display. `forward_stderr`
+    /// now captures lines and forwards them as `Event::McpLog` instead.
+    #[tokio::test]
+    async fn stdio_stderr_is_captured_as_events() {
+        let (event_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let (mut writer, reader) = tokio::io::duplex(8192);
+
+        let task = tokio::spawn(forward_stderr("srv".to_string(), reader, event_tx));
+
+        // A normal line, an empty line (skipped), and an over-long line
+        // (truncated to MAX_LINE_LEN at a char boundary).
+        writer.write_all(b"hello from stderr\n").await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer
+            .write_all(&vec![b'x'; MAX_LINE_LEN + 100])
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        drop(writer); // EOF: server went away
+
+        match rx.recv().await.unwrap() {
+            Event::McpLog { server, line } => {
+                assert_eq!(server, "srv");
+                assert_eq!(line, "hello from stderr");
+            }
+            other => panic!("expected Event::McpLog, got {other:?}"),
+        }
+        match rx.recv().await.unwrap() {
+            Event::McpLog { line, .. } => assert_eq!(line.len(), MAX_LINE_LEN),
+            other => panic!("expected Event::McpLog, got {other:?}"),
+        }
+
+        // EOF terminates the reader task and no further events arrive.
+        task.await.unwrap();
+        assert!(rx.recv().await.is_none());
+    }
 
     /// Regression test: `McpClient` used to clone the `Peer` out of the rmcp
     /// `RunningService` and drop the service at the end of `connect`. The

@@ -14,6 +14,7 @@ use crate::components::Component;
 use crate::components::command_palette::CommandPalette;
 use crate::components::conversation_view::ConversationView;
 use crate::components::input::Input;
+use crate::components::mcp_log::McpLogView;
 use crate::components::model_picker::{ModelPicker, ModelSourceConfig};
 use crate::components::param_input::ParamInput;
 use crate::components::persona_picker::PersonaPicker;
@@ -57,6 +58,8 @@ pub struct Home<'a> {
     persona_picker: PersonaPicker,
     /// The parameter input overlay.
     param_input: ParamInput,
+    /// The MCP server log overlay.
+    mcp_log: McpLogView,
     /// Model params from config (provider-level defaults).
     config_model_params: ModelParams,
     /// Whether a streaming response is in progress.
@@ -90,6 +93,7 @@ impl<'a> Home<'a> {
             model_picker: ModelPicker::new(),
             persona_picker: PersonaPicker::new(),
             param_input: ParamInput::new(),
+            mcp_log: McpLogView::new(),
             config_model_params: ModelParams::default(),
             streaming: false,
             compacting: false,
@@ -207,6 +211,7 @@ impl Home<'_> {
         self.model_picker.render_overlay(frame, area);
         self.persona_picker.render_overlay(frame, area);
         self.param_input.render_overlay(frame, area);
+        self.mcp_log.render_overlay(frame, area);
 
         // Render permission prompt overlay on top of everything
         if self.has_permission_prompt() {
@@ -269,6 +274,11 @@ impl Component for Home<'_> {
         // If param input is visible, it handles keys exclusively
         if self.param_input.visible {
             return self.param_input.handle_key_event(key);
+        }
+
+        // If the MCP log view is visible, it handles keys exclusively
+        if self.mcp_log.visible {
+            return self.mcp_log.handle_key_event(key);
         }
 
         // If permission prompt is showing, handle permission keys
@@ -337,6 +347,9 @@ impl Component for Home<'_> {
                 (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
                     return Action::CompactContext;
                 }
+                (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    return Action::OpenMcpLog;
+                }
                 (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => {
                     return Action::OpenModelPicker;
                 }
@@ -357,6 +370,7 @@ impl Component for Home<'_> {
             (KeyCode::Char('q'), m) if m.contains(KeyModifiers::CONTROL) => Action::Quit,
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => Action::CopySelection,
             (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => Action::CompactContext,
+            (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => Action::OpenMcpLog,
             (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => Action::OpenModelPicker,
             (KeyCode::Char('.'), m) if m.contains(KeyModifiers::CONTROL) => {
                 Action::OpenPersonaPicker
@@ -583,6 +597,21 @@ impl Component for Home<'_> {
                 if !self.streaming && !self.executing_tools {
                     self.input.set_focused(true);
                 }
+            }
+
+            // -- MCP log view --
+            Action::OpenMcpLog => {
+                self.mcp_log.show();
+                self.input.set_focused(false);
+            }
+            Action::CloseMcpLog => {
+                self.mcp_log.hide();
+                if !self.streaming && !self.executing_tools {
+                    self.input.set_focused(true);
+                }
+            }
+            Action::McpLogAppend { server, line } => {
+                self.mcp_log.push(server, line);
             }
             Action::SetTemperature(val) => {
                 self.conversation.param_overrides.temperature = *val;

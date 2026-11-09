@@ -74,6 +74,10 @@ pub enum Event {
     /// A provider's model list finished loading. Contains (provider_name, models).
     ProviderModelsFetched(String, Vec<String>),
 
+    // -- MCP events --
+    /// A line of stderr output captured from a stdio MCP server process.
+    McpLog { server: String, line: String },
+
     // -- ACP events --
     /// Agent requested permission for a tool operation.
     AcpPermissionRequest {

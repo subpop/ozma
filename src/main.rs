@@ -67,7 +67,9 @@ async fn main() -> Result<()> {
                     "Connecting to {} MCP server(s)...",
                     config.mcp_servers.len()
                 );
-                mcp_manager.connect_all(&config.mcp_servers).await;
+                mcp_manager
+                    .connect_all(&config.mcp_servers, &tui.event_tx)
+                    .await;
             }
             let mut app = App::new(provider, store, config, mcp_manager);
             app.run(tui).await?;

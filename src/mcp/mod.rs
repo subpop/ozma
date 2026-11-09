@@ -6,10 +6,12 @@ use base64::Engine;
 use genai::chat::{Tool as GenaiTool, ToolName};
 use rmcp::model::ContentBlock;
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::config::McpServerConfig;
+use crate::event::Event;
 use crate::model::message::ContentPart;
 
 use self::client::McpClient;
@@ -46,10 +48,15 @@ impl McpManager {
     }
 
     /// Connect to all MCP servers defined in the config.
+    /// `event_tx` receives captured stderr lines from stdio servers as `Event::McpLog`.
     /// Errors for individual servers are logged but don't prevent other servers from connecting.
-    pub async fn connect_all(&mut self, configs: &[McpServerConfig]) {
+    pub async fn connect_all(
+        &mut self,
+        configs: &[McpServerConfig],
+        event_tx: &UnboundedSender<Event>,
+    ) {
         for config in configs {
-            match McpClient::connect(config).await {
+            match McpClient::connect(config, event_tx).await {
                 Ok(client) => {
                     // Register all tools from this server
                     for tool in &client.tools {

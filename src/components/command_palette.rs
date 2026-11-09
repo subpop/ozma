@@ -70,6 +70,11 @@ impl CommandPalette {
                 action: Action::OpenSessionList,
             },
             Command {
+                name: "MCP Server Logs".into(),
+                shortcut: "Ctrl+L".into(),
+                action: Action::OpenMcpLog,
+            },
+            Command {
                 name: "Compact Context".into(),
                 shortcut: "Ctrl+K".into(),
                 action: Action::CompactContext,

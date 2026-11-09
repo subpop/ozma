@@ -2,6 +2,7 @@ pub mod command_palette;
 pub mod conversation_view;
 pub mod home;
 pub mod input;
+pub mod mcp_log;
 pub mod model_picker;
 pub mod param_input;
 pub mod persona_picker;
@@ -76,6 +77,10 @@ pub trait Component {
                 Action::ProviderModelsFetched(name.clone(), models.clone())
             }
             Event::Paste(text) => Action::PasteText(text.clone()),
+            Event::McpLog { server, line } => Action::McpLogAppend {
+                server: server.clone(),
+                line: line.clone(),
+            },
             Event::AcpPermissionRequest {
                 request_id,
                 call_id: _,

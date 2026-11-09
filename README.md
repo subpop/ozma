@@ -17,7 +17,7 @@ ozma provides a keyboard-driven TUI for conversing with large language models, w
 - **Streaming responses** -- tokens appear as they arrive
 - **Multimodal input** -- paste images from the clipboard (`Ctrl+V`), attach images or inline text files with `@path` (with tab completion)
 - **Built-in tools** -- file I/O, directory listing, shell commands, web fetch, web search
-- **MCP support** -- connect to external [Model Context Protocol](https://modelcontextprotocol.io/) servers (stdio and HTTP transports)
+- **MCP support** -- connect to external [Model Context Protocol](https://modelcontextprotocol.io/) servers (stdio and HTTP transports); stderr from stdio servers is captured and viewable with `Ctrl+L`
 - **Tool permission system** -- auto-approve read-only tools, prompt for destructive/dangerous ones
 - **Session persistence** -- conversations saved to SQLite (including provider, model, params, and persona); browse and resume past sessions
 - **Context compaction** -- summarize older messages to stay within context limits
@@ -205,6 +205,7 @@ Each persona sets its own system prompt. Environment context (cwd, platform, dat
 | `Ctrl+N` | New session |
 | `Ctrl+O` | Open session list |
 | `Ctrl+K` | Compact context |
+| `Ctrl+L` | Open MCP server log (captured stderr) |
 | `Ctrl+M` | Switch model |
 | `Ctrl+.` | Switch persona |
 | `Ctrl+C` | Copy selected message or code block |
