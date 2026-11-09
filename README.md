@@ -64,7 +64,29 @@ Provider and model choice are stored per conversation in the database (not a sep
 
 ## Configuration
 
-ozma loads its config from `config.toml` (see paths above). If the file doesn't exist, it defaults to Gemini with `gemini-2.5-flash`.
+ozma loads its base config from `config.toml` (see paths above). If that file doesn't exist, it defaults to Gemini with `gemini-2.5-flash`.
+
+If a `.ozma.toml` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Tables merge by key; arrays like `[[provider]]` and `[[mcp_servers]]` append to the base list.)
+
+Example local override (`./.ozma.toml`):
+
+```toml
+# Use Anthropic for this repo only
+default_source = "anthropic"
+
+# Keep other tool settings from user config, override just this one
+[tools]
+auto_approve_write = true
+
+# Add a repo-local MCP server while keeping user-level servers
+[[mcp_servers]]
+name = "repo-files"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+User-level base config example (`config.toml`):
 
 ```toml
 # Choose which source to use by default (provider or agent name)

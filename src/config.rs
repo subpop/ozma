@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{Result, eyre};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 /// Top-level application configuration, loaded from `~/.config/ozma/config.toml`.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// Default source name (provider or agent).
     #[serde(default)]
@@ -41,7 +41,7 @@ pub enum SourceKind<'a> {
 }
 
 /// Configuration for an ACP agent (e.g. `opencode acp`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     /// Human-readable name (shown in the model/source picker).
     pub name: String,
@@ -63,7 +63,7 @@ pub struct AgentConfig {
 }
 
 /// Configuration for tool permissions and behavior.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolsConfig {
     /// Whether to auto-approve read-only tools (read_file, list_directory, web_fetch, web_search).
     /// Default: true.
@@ -96,7 +96,7 @@ fn default_true() -> bool {
 }
 
 /// Configuration for an MCP (Model Context Protocol) server.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct McpServerConfig {
     /// Human-readable name for this server (e.g., "filesystem", "github").
     pub name: String,
@@ -154,7 +154,7 @@ impl ModelParams {
 }
 
 /// Wire protocol override for providers that support multiple protocols behind one endpoint.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WireProtocol {
     /// Use adapter-native behavior.
@@ -168,7 +168,7 @@ pub enum WireProtocol {
 }
 
 /// Configuration for a single LLM provider.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProviderConfig {
     /// Human-readable name for this provider (e.g., "openai", "anthropic", "local-ollama").
     pub name: String,
@@ -257,29 +257,55 @@ impl ProviderConfig {
 }
 
 impl Config {
-    /// Load configuration from `~/.config/ozma/config.toml`.
-    /// Returns a default config if the file doesn't exist.
+    /// Load configuration from `~/.config/ozma/config.toml` with optional
+    /// per-directory overrides from `.ozma.toml` in the current working directory.
+    ///
+    /// `.ozma.toml` is layered on top of the user config and overrides matching keys.
+    /// If the user config file doesn't exist, defaults are used as the base layer.
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
+        let user_path = Self::config_path()?;
+        let local_path = Self::local_config_path();
 
-        if !path.exists() {
-            info!("No config file at {:?}, using defaults", path);
-            return Ok(Self::default());
+        let mut config = if user_path.exists() {
+            Self::parse_config_file(&user_path)?
+        } else {
+            info!("No config file at {:?}, using defaults", user_path);
+            Self::default()
+        };
+
+        if local_path.exists() {
+            let local_overrides = Self::parse_value_file(&local_path)?;
+            let mut merged = toml::Value::try_from(&config).map_err(|e| {
+                eyre!(
+                    "Failed to serialize base config for layering {:?}: {}",
+                    user_path,
+                    e
+                )
+            })?;
+            merge_toml_values(&mut merged, local_overrides);
+            config = merged.try_into().map_err(|e| {
+                eyre!(
+                    "Failed to parse layered config with local overrides {:?}: {}",
+                    local_path,
+                    e
+                )
+            })?;
+            info!("Applied local config overrides from {:?}", local_path);
         }
-
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| eyre!("Failed to read config file {:?}: {}", path, e))?;
-
-        let config: Config = toml::from_str(&contents)
-            .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))?;
 
         config.validate()?;
 
         info!(
-            "Loaded config from {:?} ({} providers)",
-            path,
-            config.provider.len()
+            "Loaded config ({} providers) from user {:?}{}",
+            config.provider.len(),
+            user_path,
+            if local_path.exists() {
+                format!(", local {:?}", local_path)
+            } else {
+                String::new()
+            }
         );
+
         Ok(config)
     }
 
@@ -319,10 +345,31 @@ impl Config {
         Ok(())
     }
 
-    /// Get the path to the config file.
+    /// Get the path to the user-level config file.
     fn config_path() -> Result<PathBuf> {
         let config_dir = config_base_dir()?;
         Ok(config_dir.join("ozma").join("config.toml"))
+    }
+
+    /// Get the path to the local per-directory config override file.
+    fn local_config_path() -> PathBuf {
+        PathBuf::from(".ozma.toml")
+    }
+
+    fn parse_config_file(path: &PathBuf) -> Result<Self> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| eyre!("Failed to read config file {:?}: {}", path, e))?;
+
+        toml::from_str(&contents)
+            .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))
+    }
+
+    fn parse_value_file(path: &PathBuf) -> Result<toml::Value> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| eyre!("Failed to read config file {:?}: {}", path, e))?;
+
+        toml::from_str(&contents)
+            .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))
     }
 
     /// Default source name: `default_source`, else first provider/agent.
@@ -400,6 +447,26 @@ impl Default for Config {
 /// - Windows: {FOLDERID_RoamingAppData}
 fn config_base_dir() -> Result<PathBuf> {
     dirs::config_dir().ok_or_else(|| eyre!("Could not determine config directory"))
+}
+
+fn merge_toml_values(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            for (key, overlay_value) in overlay_table {
+                if let Some(base_value) = base_table.get_mut(&key) {
+                    merge_toml_values(base_value, overlay_value);
+                } else {
+                    base_table.insert(key, overlay_value);
+                }
+            }
+        }
+        (toml::Value::Array(base_array), toml::Value::Array(overlay_array)) => {
+            base_array.extend(overlay_array);
+        }
+        (base_value, overlay_value) => {
+            *base_value = overlay_value;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -648,5 +715,75 @@ args = ["acp"]
         assert_eq!(agent.name, "opencode");
         assert_eq!(agent.command, "opencode");
         assert_eq!(agent.args, vec!["acp"]);
+    }
+
+    #[test]
+    fn layered_override_merges_nested_tables() {
+        let mut base = toml::Value::try_from(&Config {
+            default_source: Some("openai".to_string()),
+            provider: vec![ProviderConfig {
+                name: "openai".to_string(),
+                models: Some(vec!["gpt-4o".to_string()]),
+                api_key_env: None,
+                api_key_cmd: None,
+                base_url: None,
+                adapter: Some("openai".to_string()),
+                wire_protocol: None,
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                additional_headers: HashMap::new(),
+            }],
+            agent: Vec::new(),
+            tools: ToolsConfig {
+                auto_approve_read: true,
+                auto_approve_write: false,
+                auto_approve_execute: false,
+            },
+            mcp_servers: Vec::new(),
+            default_persona: None,
+        })
+        .unwrap();
+
+        let local: toml::Value = toml::from_str(
+            r#"
+default_source = "anthropic"
+
+[tools]
+auto_approve_write = true
+"#,
+        )
+        .unwrap();
+
+        merge_toml_values(&mut base, local);
+        let merged: Config = base.try_into().unwrap();
+
+        assert_eq!(merged.default_source.as_deref(), Some("anthropic"));
+        assert!(merged.tools.auto_approve_read);
+        assert!(merged.tools.auto_approve_write);
+        assert!(!merged.tools.auto_approve_execute);
+    }
+
+    #[test]
+    fn layered_override_appends_provider_list() {
+        let mut base = toml::Value::try_from(&Config::default()).unwrap();
+
+        let local: toml::Value = toml::from_str(
+            r#"
+[[provider]]
+name = "openai"
+adapter = "openai"
+models = ["gpt-4o-mini"]
+"#,
+        )
+        .unwrap();
+
+        merge_toml_values(&mut base, local);
+        let merged: Config = base.try_into().unwrap();
+
+        assert_eq!(merged.provider.len(), 2);
+        assert_eq!(merged.provider[0].name, "gemini");
+        assert_eq!(merged.provider[1].name, "openai");
+        assert_eq!(merged.provider[1].default_model(), Some("gpt-4o-mini"));
     }
 }
