@@ -53,7 +53,7 @@ ozma uses platform-native directories via the [dirs](https://crates.io/crates/di
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| Config | `~/.config/ozma/config.toml` | `~/Library/Application Support/ozma/config.toml` | `%APPDATA%\ozma\config.toml` |
+| Config | `~/.config/ozma/config.json` | `~/Library/Application Support/ozma/config.json` | `%APPDATA%\ozma\config.json` |
 | Database | `~/.local/share/ozma/ozma.db` | `~/Library/Application Support/ozma/ozma.db` | `%APPDATA%\ozma\ozma.db` |
 | Log | `~/.local/share/ozma/ozma.log` | `~/Library/Application Support/ozma/ozma.log` | `%APPDATA%\ozma\ozma.log` |
 | Pricing cache | `~/.local/share/ozma/cache/models.json` | `~/Library/Application Support/ozma/cache/models.json` | `%APPDATA%\ozma\cache\models.json` |
@@ -64,142 +64,101 @@ Provider and model choice are stored per conversation in the database (not a sep
 
 ## Configuration
 
-ozma loads its base config from `config.toml` (see paths above). If that file doesn't exist, it defaults to Gemini with `gemini-2.5-flash`.
+ozma loads its base config from `config.json` (see paths above). If that file doesn't exist, it defaults to Gemini with `gemini-2.5-flash`.
 
-If a `.ozma.toml` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Tables merge by key; arrays like `[[provider]]` and `[[mcp_servers]]` append to the base list.)
+A JSON Schema is available at `docs/config.schema.json` (published at `https://subpop.github.io/ozma/config.schema.json`). You can opt into editor validation/autocomplete by adding `"$schema"` to your config.
 
-Example local override (`./.ozma.toml`):
+If a `.ozma.json` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Objects merge by key; arrays like `mcp_servers` append to the base list.)
 
-```toml
-# Use Anthropic for this repo only
-default_source = "anthropic"
+Providers are configured as an object map, where each key is the provider name.
 
-# Keep other tool settings from user config, override just this one
-[tools]
-auto_approve_write = true
+Example local override (`./.ozma.json`):
 
-# Add a repo-local MCP server while keeping user-level servers
-[[mcp_servers]]
-name = "repo-files"
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```json
+{
+  "$schema": "https://subpop.github.io/ozma/config.schema.json",
+  "default_source": "anthropic",
+  "tools": {
+    "auto_approve_write": true
+  },
+  "mcp_servers": [
+    {
+      "name": "repo-files",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  ]
+}
 ```
 
-User-level base config example (`config.toml`):
+User-level base config example (`config.json`):
 
-```toml
-# Choose which source to use by default (provider or agent name)
-default_source = "openai"
-
-# Optional default persona: "ozma", "ozcode", "ozreview", or "ozplan"
-default_persona = "ozma"
-
-# Providers ---------------------------------------------------------------
-# `adapter` is optional. When set, it acts as a shorthand for the provider's
-# base values: the default wire format, endpoint, and API key env var.
-# Explicit `wire_protocol`, `base_url`, and `api_key_env`/`api_key_cmd`
-# values take precedence over the adapter defaults.
-# When `adapter` is omitted, the provider must be fully defined:
-# `base_url`, `api_key_env` or `api_key_cmd`, and a concrete `wire_protocol`
-# (`chat_completions`, `responses`, or `messages`; "auto" is not allowed
-# without an adapter).
-# `models` is optional: if omitted, ozma will try to discover models from the provider API.
-
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o-mini", "gpt-4o", "o3-mini"]
-# api_key_env = "OPENAI_API_KEY"  # genai auto-detects this
-# api_key_cmd = "op read op://vault/openai/credential"  # alternative to api_key_env:
-# run a shell command to fetch the key on every request (e.g. from a password
-# manager). Setting both api_key_env and api_key_cmd for the same provider is
-# a config error.
-# additional_headers = { "x-my-header" = "value" }
-# temperature = 0.7
-# top_p = 1.0
-# max_tokens = 4096
-
-[[provider]]
-name = "anthropic"
-adapter = "anthropic"
-models = ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"]
-
-[[provider]]
-name = "gemini"
-adapter = "gemini"
-# models omitted -> auto-discover
-
-[[provider]]
-name = "local-ollama"
-adapter = "openai"
-models = ["llama3"]
-base_url = "http://localhost:11434/v1/"
-
-# A provider without `adapter` must be fully defined: base_url, an API key,
-# and a concrete wire_protocol. Useful for custom gateways when no genai
-# adapter matches.
-[[provider]]
-name = "my-gateway"
-base_url = "https://gateway.example.com/v1/"
-api_key_env = "GATEWAY_API_KEY"
-wire_protocol = "chat_completions"
-# api_key_cmd = "op read op://vault/gateway/credential"  # alternative to api_key_env
-# models omitted -> auto-discover
-
-[[provider]]
-name = "opencode-go"
-adapter = "opencode_go"
-# Optional: override protocol for endpoints that support multiple wire formats.
-# Supported values: "auto", "chat_completions", "responses", "messages"
-# wire_protocol = "responses"
-# When a conversation is active, ozma sends x-opencode-session automatically.
-# base_url = "https://ai.gateway.go/"
-# models omitted -> auto-discover
-
-# If your gateway mixes protocols across models, define separate providers
-# with different wire_protocol values.
-
-# ACP agents --------------------------------------------------------------
-# When an agent is the active source, ozma talks to it over JSON-RPC stdio.
-# The agent owns the LLM loop, tools, and MCP. Sessions come from the agent
-# (Ctrl+O), not ozma.db. MCP servers below are handed to the agent on session/new.
-
-[[agent]]
-name = "opencode"
-command = "opencode"
-args = ["acp"]
-# cwd = "."           # optional; defaults to process cwd
-# env = { FOO = "bar" }
-
-# Tool permissions ---------------------------------------------------------
-
-[tools]
-auto_approve_read = true     # read_file, list_directory, web_fetch, web_search
-auto_approve_write = false   # write_file
-auto_approve_execute = false # run_command
-
-# MCP servers --------------------------------------------------------------
-
-[[mcp_servers]]
-name = "filesystem"
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-
-[[mcp_servers]]
-name = "remote"
-transport = "http"
-url = "http://localhost:3000/mcp"
+```json
+{
+  "$schema": "https://subpop.github.io/ozma/config.schema.json",
+  "default_source": "openai",
+  "default_persona": "ozma",
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o-mini", "gpt-4o", "o3-mini"]
+    },
+    "anthropic": {
+      "adapter": "anthropic",
+      "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"]
+    },
+    "gemini": {
+      "adapter": "gemini"
+    },
+    "local-ollama": {
+      "adapter": "openai",
+      "models": ["llama3"],
+      "base_url": "http://localhost:11434/v1/"
+    },
+    "my-gateway": {
+      "base_url": "https://gateway.example.com/v1/",
+      "api_key_env": "GATEWAY_API_KEY",
+      "wire_protocol": "chat_completions"
+    },
+    "opencode-go": {
+      "adapter": "opencode_go"
+    }
+  },
+  "agent": {
+    "opencode": {
+      "command": "opencode",
+      "args": ["acp"]
+    }
+  },
+  "tools": {
+    "auto_approve_read": true,
+    "auto_approve_write": false,
+    "auto_approve_execute": false
+  },
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    {
+      "name": "remote",
+      "transport": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  ]
+}
 ```
 
 ### ACP agents
 
-Set `default_source` to an `[[agent]]` name (or pick the agent in the model/source picker) to chat through that agent. Direct `[[provider]]` sessions continue to use ozma’s built-in tools, in-process MCP, and SQLite persistence.
+Set `default_source` to an agent `name` (or pick the agent in the model/source picker) to chat through that agent. Direct provider sessions continue to use ozma’s built-in tools, in-process MCP, and SQLite persistence.
 
 Manual smoke checklist (requires an ACP-capable binary such as `opencode`):
 
-1. Configure `[[agent]]` + `default_source = "opencode"` (or switch via the picker).
+1. Configure an `agent` map entry (e.g. `"agent": { "opencode": { ... } }`) + `"default_source": "opencode"` (or switch via the picker).
 2. Start ozma — agent initialize + `session/new` should succeed (see log).
 3. Send a message — reply streams in the same chat UI.
 4. Trigger a tool that needs permission — y/n/a prompt appears; approve/deny works.

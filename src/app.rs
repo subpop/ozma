@@ -93,9 +93,9 @@ impl<'a> App<'a> {
     pub async fn new_for_agent(store: Store, config: Config) -> Self {
         // Placeholder provider is unused; replaced in run() when the agent connects.
         // Build from first configured provider if any, else a minimal stub via config default.
-        let provider = if let Some(p) = config.provider.first() {
+        let provider = if let Some((provider_name, _)) = config.provider.iter().next() {
             let mut cfg = config.clone();
-            cfg.default_source = Some(p.name.clone());
+            cfg.default_source = Some(provider_name.clone());
             match Provider::from_config(&cfg).await {
                 Ok(p) => p,
                 // Fall through — connect agent path doesn't need this provider.
@@ -615,12 +615,7 @@ impl<'a> App<'a> {
                 let source_name = self.source_name().to_string();
                 let model_name = self.model_name().to_string();
                 self.home.set_active_source(&source_name, &model_name);
-                if let Some(pc) = self
-                    .config
-                    .provider
-                    .iter()
-                    .find(|p| p.name == *provider_name)
-                {
+                if let Some(pc) = self.config.provider.get(provider_name) {
                     self.home.set_config_params(pc.model_params());
                 }
                 self.home.conversation.provider = self.source_name().to_string();
@@ -640,7 +635,7 @@ impl<'a> App<'a> {
                 // Handled by home.update() below
             }
             Action::RequestProviderModels(name) => {
-                if let Some(pc) = self.config.provider.iter().find(|p| &p.name == name) {
+                if let Some(pc) = self.config.provider.get(name.as_str()) {
                     let pc = pc.clone();
                     if let Some(event_tx) = self.action_tx.clone() {
                         tokio::spawn(async move {
@@ -1148,23 +1143,23 @@ impl<'a> App<'a> {
             .config
             .provider
             .iter()
-            .map(|p| {
+            .map(|(name, p)| {
                 let models = if p.models.is_some() {
                     p.models.clone()
-                } else if p.name == active_name {
+                } else if *name == active_name {
                     self.provider_ref().map(|pr| pr.models().to_vec())
                 } else {
                     None
                 };
                 ModelSourceConfig::Provider {
-                    name: p.name.clone(),
+                    name: name.clone(),
                     models,
                 }
             })
             .collect();
-        for agent in &self.config.agent {
+        for agent_name in self.config.agent.keys() {
             sources.push(ModelSourceConfig::Agent {
-                name: agent.name.clone(),
+                name: agent_name.clone(),
             });
         }
         sources
@@ -1238,12 +1233,7 @@ impl<'a> App<'a> {
         let needs_model_switch = conversation.model != current_model;
 
         if needs_provider_switch {
-            if self
-                .config
-                .provider
-                .iter()
-                .any(|p| p.name == conversation.provider)
-            {
+            if self.config.provider.contains_key(&conversation.provider) {
                 let mut new_config = self.config.clone();
                 new_config.default_source = Some(conversation.provider.clone());
                 match Provider::from_config_with_model(&new_config, &conversation.model).await {
@@ -1283,12 +1273,7 @@ impl<'a> App<'a> {
         let source_name = self.source_name().to_string();
         let model_name = self.model_name().to_string();
         self.home.set_active_source(&source_name, &model_name);
-        if let Some(pc) = self
-            .config
-            .provider
-            .iter()
-            .find(|p| p.name == conversation.provider)
-        {
+        if let Some(pc) = self.config.provider.get(&conversation.provider) {
             self.home.set_config_params(pc.model_params());
         }
     }

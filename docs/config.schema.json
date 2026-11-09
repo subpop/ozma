@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://subpop.github.io/ozma/config.schema.json",
+  "title": "ozma configuration",
+  "description": "Schema for ozma config.json and .ozma.json",
+  "type": "object",
+  "properties": {
+    "default_source": {
+      "type": "string",
+      "description": "Default source name (provider key or agent name)."
+    },
+    "default_persona": {
+      "type": "string",
+      "description": "Default persona name (e.g. ozma, ozcode, ozreview, ozplan)."
+    },
+    "provider": {
+      "type": "object",
+      "description": "Provider configurations keyed by provider name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/providerConfig"
+      }
+    },
+    "agent": {
+      "type": "object",
+      "description": "ACP agent configurations keyed by agent name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentConfig"
+      }
+    },
+    "tools": {
+      "$ref": "#/$defs/toolsConfig"
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mcpServerConfig"
+      }
+    }
+  },
+  "$defs": {
+    "wireProtocol": {
+      "type": "string",
+      "enum": ["auto", "chat_completions", "responses", "messages"]
+    },
+    "providerConfig": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional; if omitted, ozma uses the provider map key as the name."
+        },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional. If omitted, ozma attempts provider model discovery."
+        },
+        "api_key_env": { "type": "string" },
+        "api_key_cmd": { "type": "string" },
+        "base_url": { "type": "string" },
+        "adapter": { "type": "string" },
+        "wire_protocol": { "$ref": "#/$defs/wireProtocol" },
+        "temperature": { "type": "number" },
+        "top_p": { "type": "number" },
+        "max_tokens": { "type": "integer", "minimum": 0 },
+        "additional_headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentConfig": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional; if omitted, ozma uses the agent map key as the name."
+        },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {}
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolsConfig": {
+      "type": "object",
+      "properties": {
+        "auto_approve_read": { "type": "boolean", "default": true },
+        "auto_approve_write": { "type": "boolean", "default": false },
+        "auto_approve_execute": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "mcpServerConfig": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "http"],
+          "default": "stdio"
+        },
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {}
+        },
+        "url": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

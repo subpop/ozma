@@ -1,24 +1,24 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-/// Top-level application configuration, loaded from `~/.config/ozma/config.toml`.
+/// Top-level application configuration, loaded from `~/.config/ozma/config.json`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// Default source name (provider or agent).
     #[serde(default)]
     pub default_source: Option<String>,
 
-    /// Provider configurations.
+    /// Provider configurations keyed by provider name.
     #[serde(default)]
-    pub provider: Vec<ProviderConfig>,
+    pub provider: BTreeMap<String, ProviderConfig>,
 
-    /// ACP agent configurations (external coding agents over stdio).
+    /// ACP agent configurations keyed by agent name.
     #[serde(default)]
-    pub agent: Vec<AgentConfig>,
+    pub agent: BTreeMap<String, AgentConfig>,
 
     /// Tool permission settings.
     #[serde(default)]
@@ -43,7 +43,8 @@ pub enum SourceKind<'a> {
 /// Configuration for an ACP agent (e.g. `opencode acp`).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
-    /// Human-readable name (shown in the model/source picker).
+    /// Agent name. In config JSON this is inferred from the `agent` map key.
+    #[serde(default)]
     pub name: String,
 
     /// Command to spawn (e.g. `"opencode"`).
@@ -170,7 +171,8 @@ pub enum WireProtocol {
 /// Configuration for a single LLM provider.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProviderConfig {
-    /// Human-readable name for this provider (e.g., "openai", "anthropic", "local-ollama").
+    /// Provider name. In config JSON this is inferred from the `provider` map key.
+    #[serde(default)]
     pub name: String,
 
     /// Available model identifiers (e.g., ["gpt-4o-mini", "gpt-4o", "o3-mini"]).
@@ -190,7 +192,6 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub api_key_cmd: Option<String>,
 
-    /// Custom base URL for the API endpoint (e.g., "http://localhost:11434/v1/").
     /// Optional custom base URL for the API endpoint (e.g. "http://localhost:11434/v1/").
     /// Overrides the adapter's default endpoint when set.
     #[serde(default)]
@@ -257,17 +258,19 @@ impl ProviderConfig {
 }
 
 impl Config {
-    /// Load configuration from `~/.config/ozma/config.toml` with optional
-    /// per-directory overrides from `.ozma.toml` in the current working directory.
+    /// Load configuration from `~/.config/ozma/config.json` with optional
+    /// per-directory overrides from `.ozma.json` in the current working directory.
     ///
-    /// `.ozma.toml` is layered on top of the user config and overrides matching keys.
+    /// `.ozma.json` is layered on top of the user config and overrides matching keys.
     /// If the user config file doesn't exist, defaults are used as the base layer.
     pub fn load() -> Result<Self> {
         let user_path = Self::config_path()?;
         let local_path = Self::local_config_path();
 
         let mut config = if user_path.exists() {
-            Self::parse_config_file(&user_path)?
+            let mut cfg = Self::parse_config_file(&user_path)?;
+            cfg.normalize_names();
+            cfg
         } else {
             info!("No config file at {:?}, using defaults", user_path);
             Self::default()
@@ -275,21 +278,22 @@ impl Config {
 
         if local_path.exists() {
             let local_overrides = Self::parse_value_file(&local_path)?;
-            let mut merged = toml::Value::try_from(&config).map_err(|e| {
+            let mut merged = serde_json::to_value(&config).map_err(|e| {
                 eyre!(
                     "Failed to serialize base config for layering {:?}: {}",
                     user_path,
                     e
                 )
             })?;
-            merge_toml_values(&mut merged, local_overrides);
-            config = merged.try_into().map_err(|e| {
+            merge_json_values(&mut merged, local_overrides);
+            config = serde_json::from_value(merged).map_err(|e| {
                 eyre!(
                     "Failed to parse layered config with local overrides {:?}: {}",
                     local_path,
                     e
                 )
             })?;
+            config.normalize_names();
             info!("Applied local config overrides from {:?}", local_path);
         }
 
@@ -311,11 +315,11 @@ impl Config {
 
     /// Validate cross-field constraints that serde can't express on its own.
     fn validate(&self) -> Result<()> {
-        for provider in &self.provider {
+        for (provider_name, provider) in &self.provider {
             if provider.api_key_env.is_some() && provider.api_key_cmd.is_some() {
                 return Err(eyre!(
                     "Provider '{}' sets both api_key_env and api_key_cmd; only one may be set",
-                    provider.name
+                    provider_name
                 ));
             }
 
@@ -336,7 +340,7 @@ impl Config {
                 if !missing.is_empty() {
                     return Err(eyre!(
                         "Provider '{}' has no adapter and is missing: {} (set an adapter, or define the provider fully with base_url, an api key, and a concrete wire_protocol)",
-                        provider.name,
+                        provider_name,
                         missing.join(", ")
                     ));
                 }
@@ -345,30 +349,39 @@ impl Config {
         Ok(())
     }
 
+    fn normalize_names(&mut self) {
+        for (name, provider) in &mut self.provider {
+            provider.name = name.clone();
+        }
+        for (name, agent) in &mut self.agent {
+            agent.name = name.clone();
+        }
+    }
+
     /// Get the path to the user-level config file.
     fn config_path() -> Result<PathBuf> {
         let config_dir = config_base_dir()?;
-        Ok(config_dir.join("ozma").join("config.toml"))
+        Ok(config_dir.join("ozma").join("config.json"))
     }
 
     /// Get the path to the local per-directory config override file.
     fn local_config_path() -> PathBuf {
-        PathBuf::from(".ozma.toml")
+        PathBuf::from(".ozma.json")
     }
 
-    fn parse_config_file(path: &PathBuf) -> Result<Self> {
+    fn parse_config_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| eyre!("Failed to read config file {:?}: {}", path, e))?;
 
-        toml::from_str(&contents)
+        serde_json::from_str(&contents)
             .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))
     }
 
-    fn parse_value_file(path: &PathBuf) -> Result<toml::Value> {
+    fn parse_value_file(path: &Path) -> Result<serde_json::Value> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| eyre!("Failed to read config file {:?}: {}", path, e))?;
 
-        toml::from_str(&contents)
+        serde_json::from_str(&contents)
             .map_err(|e| eyre!("Failed to parse config file {:?}: {}", path, e))
     }
 
@@ -376,16 +389,16 @@ impl Config {
     pub fn default_source_name(&self) -> Option<&str> {
         self.default_source
             .as_deref()
-            .or_else(|| self.provider.first().map(|p| p.name.as_str()))
-            .or_else(|| self.agent.first().map(|a| a.name.as_str()))
+            .or_else(|| self.provider.keys().next().map(|name| name.as_str()))
+            .or_else(|| self.agent.keys().next().map(|name| name.as_str()))
     }
 
     /// Resolve a source by name to either a provider or an agent.
     pub fn source_by_name(&self, name: &str) -> Option<SourceKind<'_>> {
-        if let Some(p) = self.provider.iter().find(|p| p.name == name) {
+        if let Some(p) = self.provider.get(name) {
             return Some(SourceKind::Provider(p));
         }
-        if let Some(a) = self.agent.iter().find(|a| a.name == name) {
+        if let Some(a) = self.agent.get(name) {
             return Some(SourceKind::Agent(a));
         }
         None
@@ -403,7 +416,7 @@ impl Config {
         match self.active_source() {
             Some(SourceKind::Provider(p)) => Some(p),
             Some(SourceKind::Agent(_)) => None,
-            None => self.provider.first(),
+            None => self.provider.values().next(),
         }
     }
 
@@ -418,9 +431,10 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            default_source: None,
-            provider: vec![ProviderConfig {
+        let mut provider = BTreeMap::new();
+        provider.insert(
+            "gemini".to_string(),
+            ProviderConfig {
                 name: "gemini".to_string(),
                 models: Some(vec!["gemini-2.5-flash".to_string()]),
                 api_key_env: None,
@@ -432,8 +446,13 @@ impl Default for Config {
                 top_p: None,
                 max_tokens: None,
                 additional_headers: HashMap::new(),
-            }],
-            agent: Vec::new(),
+            },
+        );
+
+        Self {
+            default_source: None,
+            provider,
+            agent: BTreeMap::new(),
             tools: ToolsConfig::default(),
             mcp_servers: Vec::new(),
             default_persona: None,
@@ -449,18 +468,18 @@ fn config_base_dir() -> Result<PathBuf> {
     dirs::config_dir().ok_or_else(|| eyre!("Could not determine config directory"))
 }
 
-fn merge_toml_values(base: &mut toml::Value, overlay: toml::Value) {
+fn merge_json_values(base: &mut serde_json::Value, overlay: serde_json::Value) {
     match (base, overlay) {
-        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
-            for (key, overlay_value) in overlay_table {
-                if let Some(base_value) = base_table.get_mut(&key) {
-                    merge_toml_values(base_value, overlay_value);
+        (serde_json::Value::Object(base_obj), serde_json::Value::Object(overlay_obj)) => {
+            for (key, overlay_value) in overlay_obj {
+                if let Some(base_value) = base_obj.get_mut(&key) {
+                    merge_json_values(base_value, overlay_value);
                 } else {
-                    base_table.insert(key, overlay_value);
+                    base_obj.insert(key, overlay_value);
                 }
             }
         }
-        (toml::Value::Array(base_array), toml::Value::Array(overlay_array)) => {
+        (serde_json::Value::Array(base_array), serde_json::Value::Array(overlay_array)) => {
             base_array.extend(overlay_array);
         }
         (base_value, overlay_value) => {
@@ -472,6 +491,12 @@ fn merge_toml_values(base: &mut toml::Value, overlay: toml::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_config(json: &str) -> Config {
+        let mut config: Config = serde_json::from_str(json).unwrap();
+        config.normalize_names();
+        config
+    }
 
     #[test]
     fn model_params_has_any_and_merged_with() {
@@ -495,125 +520,129 @@ mod tests {
     }
 
     #[test]
-    fn toml_parse_and_active_provider() {
-        let toml = r#"
-default_source = "anthropic"
-
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o-mini", "gpt-4o"]
-temperature = 0.7
-
-[[provider]]
-name = "anthropic"
-adapter = "anthropic"
-wire_protocol = "auto"
-models = ["claude-sonnet-4-0"]
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
+    fn json_parse_and_active_provider() {
+        let config = parse_config(
+            r#"{
+  "default_source": "anthropic",
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o-mini", "gpt-4o"],
+      "temperature": 0.7
+    },
+    "anthropic": {
+      "adapter": "anthropic",
+      "wire_protocol": "auto",
+      "models": ["claude-sonnet-4-0"]
+    }
+  }
+}"#,
+        );
         let active = config.active_provider().unwrap();
         assert_eq!(active.name, "anthropic");
         assert_eq!(active.wire_protocol, Some(WireProtocol::Auto));
         assert_eq!(active.default_model(), Some("claude-sonnet-4-0"));
 
-        let openai = &config.provider[0];
+        let openai = config.provider.get("openai").unwrap();
         assert_eq!(openai.default_model(), Some("gpt-4o-mini"));
         assert_eq!(openai.model_params().temperature, Some(0.7));
     }
 
     #[test]
     fn active_provider_falls_back_to_first() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o"]
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o"]
+    }
+  }
+}"#,
+        );
         assert_eq!(config.active_provider().unwrap().name, "openai");
     }
 
     #[test]
     fn wire_protocol_parses_and_defaults() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "opencode-go-responses"
-adapter = "opencode_go"
-wire_protocol = "responses"
-models = ["muse-spark-1.3-contributor"]
-
-[[provider]]
-name = "opencode-go-auto"
-adapter = "opencode_go"
-models = ["muse-spark-1.2-contributor"]
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "opencode-go-responses": {
+      "adapter": "opencode_go",
+      "wire_protocol": "responses",
+      "models": ["muse-spark-1.3-contributor"]
+    },
+    "opencode-go-auto": {
+      "adapter": "opencode_go",
+      "models": ["muse-spark-1.2-contributor"]
+    }
+  }
+}"#,
+        );
 
         assert_eq!(
-            config.provider[0].wire_protocol,
+            config.provider["opencode-go-responses"].wire_protocol,
             Some(WireProtocol::Responses)
         );
-        assert_eq!(config.provider[1].wire_protocol, None);
+        assert_eq!(config.provider["opencode-go-auto"].wire_protocol, None);
     }
 
     #[test]
     fn validate_rejects_both_api_key_env_and_api_key_cmd() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o"]
-api_key_env = "OPENAI_API_KEY"
-api_key_cmd = "echo secret"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o"],
+      "api_key_env": "OPENAI_API_KEY",
+      "api_key_cmd": "echo secret"
+    }
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("openai"));
     }
 
     #[test]
     fn validate_allows_either_api_key_env_or_api_key_cmd_alone() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o"]
-api_key_env = "OPENAI_API_KEY"
-
-[[provider]]
-name = "anthropic"
-adapter = "anthropic"
-models = ["claude-sonnet-4-0"]
-api_key_cmd = "echo secret"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o"],
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "anthropic": {
+      "adapter": "anthropic",
+      "models": ["claude-sonnet-4-0"],
+      "api_key_cmd": "echo secret"
+    }
+  }
+}"#,
+        );
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn adapter_less_provider_parses_and_validates() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "my-gateway"
-base_url = "https://gateway.example.com/v1/"
-api_key_env = "GATEWAY_API_KEY"
-wire_protocol = "chat_completions"
-models = ["some-model"]
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "my-gateway": {
+      "base_url": "https://gateway.example.com/v1/",
+      "api_key_env": "GATEWAY_API_KEY",
+      "wire_protocol": "chat_completions",
+      "models": ["some-model"]
+    }
+  }
+}"#,
+        );
         assert!(config.validate().is_ok());
-        let provider = &config.provider[0];
+        let provider = config.provider.get("my-gateway").unwrap();
         assert_eq!(provider.adapter, None);
         assert_eq!(provider.wire_protocol, Some(WireProtocol::ChatCompletions));
         assert_eq!(
@@ -624,69 +653,75 @@ models = ["some-model"]
 
     #[test]
     fn validate_rejects_adapter_less_provider_missing_fields() {
-        let base = r#"
-[[provider]]
-name = "incomplete"
-"#;
         // Missing everything.
-        let config: Config = toml::from_str(base).unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "incomplete": {}
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("incomplete"));
         assert!(err.contains("missing: base_url, api_key_env or api_key_cmd, wire_protocol"));
 
         // base_url and key set, but wire_protocol missing.
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "incomplete"
-base_url = "https://gateway.example.com/v1/"
-api_key_env = "GATEWAY_API_KEY"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "incomplete": {
+      "base_url": "https://gateway.example.com/v1/",
+      "api_key_env": "GATEWAY_API_KEY"
+    }
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("missing: wire_protocol"));
         assert!(!err.contains("missing: base_url"));
 
         // wire_protocol set but no base_url.
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "incomplete"
-api_key_cmd = "echo secret"
-wire_protocol = "responses"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "incomplete": {
+      "api_key_cmd": "echo secret",
+      "wire_protocol": "responses"
+    }
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("missing: base_url"));
 
         // No api key.
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "incomplete"
-base_url = "https://gateway.example.com/v1/"
-wire_protocol = "messages"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "incomplete": {
+      "base_url": "https://gateway.example.com/v1/",
+      "wire_protocol": "messages"
+    }
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("missing: api_key_env or api_key_cmd"));
     }
 
     #[test]
     fn validate_rejects_adapter_less_provider_with_auto_wire_protocol() {
-        let config: Config = toml::from_str(
-            r#"
-[[provider]]
-name = "auto-no-adapter"
-base_url = "https://gateway.example.com/v1/"
-api_key_env = "GATEWAY_API_KEY"
-wire_protocol = "auto"
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "auto-no-adapter": {
+      "base_url": "https://gateway.example.com/v1/",
+      "api_key_env": "GATEWAY_API_KEY",
+      "wire_protocol": "auto"
+    }
+  }
+}"#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("auto-no-adapter"));
         assert!(err.contains("wire_protocol"));
@@ -694,22 +729,23 @@ wire_protocol = "auto"
 
     #[test]
     fn agent_config_and_active_source() {
-        let config: Config = toml::from_str(
-            r#"
-default_source = "opencode"
-
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o"]
-
-[[agent]]
-name = "opencode"
-command = "opencode"
-args = ["acp"]
-"#,
-        )
-        .unwrap();
+        let config = parse_config(
+            r#"{
+  "default_source": "opencode",
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o"]
+    }
+  },
+  "agent": {
+    "opencode": {
+      "command": "opencode",
+      "args": ["acp"]
+    }
+  }
+}"#,
+        );
         assert!(config.active_provider().is_none());
         let agent = config.active_agent().unwrap();
         assert_eq!(agent.name, "opencode");
@@ -718,23 +754,26 @@ args = ["acp"]
     }
 
     #[test]
-    fn layered_override_merges_nested_tables() {
-        let mut base = toml::Value::try_from(&Config {
+    fn layered_override_merges_nested_objects() {
+        let mut base = serde_json::to_value(&Config {
             default_source: Some("openai".to_string()),
-            provider: vec![ProviderConfig {
-                name: "openai".to_string(),
-                models: Some(vec!["gpt-4o".to_string()]),
-                api_key_env: None,
-                api_key_cmd: None,
-                base_url: None,
-                adapter: Some("openai".to_string()),
-                wire_protocol: None,
-                temperature: None,
-                top_p: None,
-                max_tokens: None,
-                additional_headers: HashMap::new(),
-            }],
-            agent: Vec::new(),
+            provider: BTreeMap::from([(
+                "openai".to_string(),
+                ProviderConfig {
+                    name: "openai".to_string(),
+                    models: Some(vec!["gpt-4o".to_string()]),
+                    api_key_env: None,
+                    api_key_cmd: None,
+                    base_url: None,
+                    adapter: Some("openai".to_string()),
+                    wire_protocol: None,
+                    temperature: None,
+                    top_p: None,
+                    max_tokens: None,
+                    additional_headers: HashMap::new(),
+                },
+            )]),
+            agent: BTreeMap::new(),
             tools: ToolsConfig {
                 auto_approve_read: true,
                 auto_approve_write: false,
@@ -745,18 +784,19 @@ args = ["acp"]
         })
         .unwrap();
 
-        let local: toml::Value = toml::from_str(
-            r#"
-default_source = "anthropic"
-
-[tools]
-auto_approve_write = true
-"#,
+        let local: serde_json::Value = serde_json::from_str(
+            r#"{
+  "default_source": "anthropic",
+  "tools": {
+    "auto_approve_write": true
+  }
+}"#,
         )
         .unwrap();
 
-        merge_toml_values(&mut base, local);
-        let merged: Config = base.try_into().unwrap();
+        merge_json_values(&mut base, local);
+        let mut merged: Config = serde_json::from_value(base).unwrap();
+        merged.normalize_names();
 
         assert_eq!(merged.default_source.as_deref(), Some("anthropic"));
         assert!(merged.tools.auto_approve_read);
@@ -765,25 +805,44 @@ auto_approve_write = true
     }
 
     #[test]
-    fn layered_override_appends_provider_list() {
-        let mut base = toml::Value::try_from(&Config::default()).unwrap();
+    fn layered_override_merges_provider_map_by_name() {
+        let mut base = serde_json::to_value(&Config::default()).unwrap();
 
-        let local: toml::Value = toml::from_str(
-            r#"
-[[provider]]
-name = "openai"
-adapter = "openai"
-models = ["gpt-4o-mini"]
-"#,
+        let local: serde_json::Value = serde_json::from_str(
+            r#"{
+  "provider": {
+    "gemini": {
+      "models": ["gemini-2.5-pro"]
+    },
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o-mini"]
+    }
+  }
+}"#,
         )
         .unwrap();
 
-        merge_toml_values(&mut base, local);
-        let merged: Config = base.try_into().unwrap();
+        merge_json_values(&mut base, local);
+        let mut merged: Config = serde_json::from_value(base).unwrap();
+        merged.normalize_names();
 
         assert_eq!(merged.provider.len(), 2);
-        assert_eq!(merged.provider[0].name, "gemini");
-        assert_eq!(merged.provider[1].name, "openai");
-        assert_eq!(merged.provider[1].default_model(), Some("gpt-4o-mini"));
+        assert_eq!(
+            merged.provider["gemini"].models,
+            Some(vec![
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-pro".to_string()
+            ])
+        );
+        assert_eq!(
+            merged.provider["gemini"].default_model(),
+            Some("gemini-2.5-flash")
+        );
+        assert_eq!(merged.provider["openai"].name, "openai");
+        assert_eq!(
+            merged.provider["openai"].default_model(),
+            Some("gpt-4o-mini")
+        );
     }
 }
