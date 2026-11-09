@@ -9,6 +9,46 @@ use crate::model::message::{ContentPart, Role, ToolCallInfo, ToolResultInfo};
 
 // ── Markdown export ────────────────────────────────────────────────
 
+fn markdown_table_cell(value: &str) -> String {
+    value
+        .replace('\n', "\\n")
+        .replace('|', "\\|")
+        .replace('`', "\\`")
+}
+
+fn tool_argument_markdown_table(args: &serde_json::Value) -> String {
+    let mut out = String::from("| Argument | Value |\n| --- | --- |\n");
+
+    match args {
+        serde_json::Value::Object(map) if map.is_empty() => {
+            out.push_str("| _none_ | _empty object_ |\n");
+        }
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                let display_value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => serde_json::to_string(value).unwrap_or_else(|_| "<invalid>".to_string()),
+                };
+                out.push_str(&format!(
+                    "| `{}` | `{}` |\n",
+                    markdown_table_cell(key),
+                    markdown_table_cell(&display_value)
+                ));
+            }
+        }
+        _ => {
+            let display_value =
+                serde_json::to_string(args).unwrap_or_else(|_| "<invalid>".to_string());
+            out.push_str(&format!(
+                "| `arguments` | `{}` |\n",
+                markdown_table_cell(&display_value)
+            ));
+        }
+    }
+
+    out
+}
+
 /// Export a conversation to a Markdown string.
 pub fn to_markdown(conversation: &Conversation) -> String {
     let mut out = String::new();
@@ -55,8 +95,8 @@ pub fn to_markdown(conversation: &Conversation) -> String {
         // Render tool calls on assistant messages
         for tc in &msg.tool_calls {
             writeln!(out, "**Tool call: `{}`**\n", tc.fn_name).unwrap();
-            let args = serde_json::to_string_pretty(&tc.fn_arguments).unwrap_or_default();
-            writeln!(out, "```json\n{args}\n```\n").unwrap();
+            out.push_str(&tool_argument_markdown_table(&tc.fn_arguments));
+            out.push('\n');
         }
 
         write_content_parts(&mut out, &msg.content);
@@ -235,7 +275,8 @@ mod tests {
         assert!(md.contains("## System\n"));
         assert!(md.contains("Be helpful"));
         assert!(md.contains("**Tool call: `read_file`**"));
-        assert!(md.contains("```json"));
+        assert!(md.contains("| Argument | Value |"));
+        assert!(md.contains("| `path` | `src/main.rs` |"));
         assert!(md.contains("## [+] Tool: read_file\n"));
         assert!(md.contains("## [x] Tool: write_file\n"));
         assert!(md.contains("![diagram](attachment:00000000-0000-0000-0000-000000000000)"));

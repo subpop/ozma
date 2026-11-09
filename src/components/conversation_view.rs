@@ -282,6 +282,69 @@ impl ConversationView {
         result
     }
 
+    fn table_cell(value: &str) -> String {
+        value
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    }
+
+    fn tool_argument_table_rows(args: &serde_json::Value) -> Vec<String> {
+        let mut entries: Vec<(String, String)> = Vec::new();
+
+        match args {
+            serde_json::Value::Object(map) if map.is_empty() => {
+                entries.push(("none".to_string(), "empty object".to_string()));
+            }
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    let display_value = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => {
+                            serde_json::to_string(value).unwrap_or_else(|_| "<invalid>".to_string())
+                        }
+                    };
+                    entries.push((Self::table_cell(key), Self::table_cell(&display_value)));
+                }
+            }
+            _ => {
+                let display_value =
+                    serde_json::to_string(args).unwrap_or_else(|_| "<invalid>".to_string());
+                entries.push(("arguments".to_string(), Self::table_cell(&display_value)));
+            }
+        }
+
+        let arg_width = entries
+            .iter()
+            .map(|(arg, _)| arg.len())
+            .max()
+            .unwrap_or(0)
+            .max("Argument".len());
+        let val_width = entries
+            .iter()
+            .map(|(_, val)| val.len())
+            .max()
+            .unwrap_or(0)
+            .max("Value".len());
+
+        let top = format!("┌─{}─┬─{}─┐", "─".repeat(arg_width), "─".repeat(val_width));
+        let mid = format!("├─{}─┼─{}─┤", "─".repeat(arg_width), "─".repeat(val_width));
+        let bottom = format!("└─{}─┴─{}─┘", "─".repeat(arg_width), "─".repeat(val_width));
+
+        let mut rows = vec![
+            top,
+            format!("│ {:<arg_width$} │ {:<val_width$} │", "Argument", "Value"),
+            mid,
+        ];
+
+        for (arg, val) in entries {
+            rows.push(format!("│ {:<arg_width$} │ {:<val_width$} │", arg, val));
+        }
+
+        rows.push(bottom);
+        rows
+    }
+
     /// Build the rendered segments for a single message.
     fn build_message_block(
         msg: &Message,
@@ -334,24 +397,19 @@ impl ConversationView {
                             rendered.push_line(Line::default());
                         }
                         for tc in &msg.tool_calls {
-                            let args_str =
-                                serde_json::to_string(&tc.fn_arguments).unwrap_or_default();
-                            let args_display = if args_str.len() > 80 {
-                                format!("{}...", &args_str[..77])
-                            } else {
-                                args_str
-                            };
                             rendered.push_line(Line::from(vec![
                                 Span::styled("⚡ ", ratatui::style::Style::new().fg(Color::Yellow)),
                                 Span::styled(
                                     tc.fn_name.clone(),
                                     ratatui::style::Style::new().fg(Color::Cyan).bold(),
                                 ),
-                                Span::styled(
-                                    format!("({})", args_display),
-                                    ratatui::style::Style::new().dim(),
-                                ),
                             ]));
+                            for row in Self::tool_argument_table_rows(&tc.fn_arguments) {
+                                rendered.push_line(Line::from(Span::styled(
+                                    format!("  {row}"),
+                                    ratatui::style::Style::new().dim(),
+                                )));
+                            }
                         }
                     }
                     // Per-message token usage annotation
