@@ -785,9 +785,15 @@ impl Home<'_> {
             return;
         };
 
-        // Center the overlay
+        // Parse arguments into (name, value) rows for the table.
+        let rows = permission_arg_rows(&perm.arguments);
+
+        // Center the overlay; grow the height to fit the argument table.
+        let visible = rows.len().min(MAX_ARG_ROWS);
+        let has_more = rows.len() > visible;
+        let content_lines = 5 + visible.max(1) + usize::from(has_more);
+        let height = (content_lines as u16 + 4).max(12).min(area.height);
         let width = (area.width * 70 / 100).max(40).min(area.width);
-        let height = 12u16.min(area.height);
         let x = (area.width.saturating_sub(width)) / 2 + area.x;
         let y = (area.height.saturating_sub(height)) / 2 + area.y;
         let popup_area = Rect::new(x, y, width, height);
@@ -813,15 +819,7 @@ impl Home<'_> {
             " Tool Permission ".to_string()
         };
 
-        // Format arguments nicely (truncate if too long)
-        let args_str = serde_json::to_string_pretty(&perm.arguments).unwrap_or_default();
-        let args_display = if args_str.len() > 200 {
-            format!("{}...", &args_str[..197])
-        } else {
-            args_str
-        };
-
-        let text = vec![
+        let mut text = vec![
             Line::from(vec![
                 Span::raw("Tool: "),
                 Span::styled(&perm.tool_name, Style::new().bold().fg(Color::Cyan)),
@@ -831,17 +829,47 @@ impl Home<'_> {
             ]),
             Line::default(),
             Line::from(Span::styled("Arguments:", Style::new().dim())),
-            Line::from(Span::raw(args_display)),
-            Line::default(),
-            Line::from(vec![
-                Span::styled("y", Style::new().bold().fg(Color::Green)),
-                Span::raw("/Enter approve  "),
-                Span::styled("n", Style::new().bold().fg(Color::Red)),
-                Span::raw("/Esc deny  "),
-                Span::styled("a", Style::new().bold().fg(Color::Yellow)),
-                Span::raw(" approve all"),
-            ]),
         ];
+
+        // Argument table: aligned name column + value column.
+        let inner_width = width.saturating_sub(4) as usize; // borders + padding
+        let name_width = rows[..visible]
+            .iter()
+            .map(|(name, _)| name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(MAX_ARG_NAME_WIDTH);
+        let value_width = inner_width.saturating_sub(name_width + 2);
+
+        if rows.is_empty() {
+            text.push(Line::from(Span::styled("(none)", Style::new().dim())));
+        } else {
+            for (name, value) in &rows[..visible] {
+                let name = truncate_chars(name, MAX_ARG_NAME_WIDTH);
+                let value = truncate_chars(&sanitize_arg_value(value), value_width);
+                text.push(Line::from(vec![
+                    Span::styled(format!("{name:<name_width$}"), Style::new().fg(Color::Cyan)),
+                    Span::raw("  "),
+                    Span::raw(value),
+                ]));
+            }
+            if has_more {
+                text.push(Line::from(Span::styled(
+                    format!("… +{} more", rows.len() - visible),
+                    Style::new().dim(),
+                )));
+            }
+        }
+
+        text.push(Line::default());
+        text.push(Line::from(vec![
+            Span::styled("y", Style::new().bold().fg(Color::Green)),
+            Span::raw("/Enter approve  "),
+            Span::styled("n", Style::new().bold().fg(Color::Red)),
+            Span::raw("/Esc deny  "),
+            Span::styled("a", Style::new().bold().fg(Color::Yellow)),
+            Span::raw(" approve all"),
+        ]));
 
         let block = Block::default()
             .title(title)
@@ -852,5 +880,192 @@ impl Home<'_> {
         let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, popup_area);
+    }
+}
+
+/// Maximum argument rows shown in the permission prompt before truncating.
+const MAX_ARG_ROWS: usize = 6;
+/// Maximum width (in chars) of the argument-name column.
+const MAX_ARG_NAME_WIDTH: usize = 16;
+
+/// Parse tool-call arguments into display rows of (name, value).
+fn permission_arg_rows(arguments: &serde_json::Value) -> Vec<(String, String)> {
+    match arguments {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(name, value)| (name.clone(), format_arg_value(value)))
+            .collect(),
+        serde_json::Value::Null => Vec::new(),
+        other => vec![(String::from("arguments"), format_arg_value(other))],
+    }
+}
+
+/// Format a JSON value for the table: strings as-is, everything else compact JSON.
+fn format_arg_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// Escape whitespace that would break the single-line table layout.
+fn sanitize_arg_value(value: &str) -> String {
+    value
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+/// Truncate to at most `max_chars` characters (UTF-8 safe), marking cuts with an ellipsis.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        truncated.push('…');
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Draw the permission prompt and return the rendered rows (one String per line).
+    fn draw_permission_rows(home: &Home<'_>, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| home.render_permission_prompt(frame, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn permission_prompt_renders_arguments_as_table() {
+        let mut home = Home::new();
+        home.pending_permissions.push(PendingPermission {
+            call_id: "c1".into(),
+            tool_name: "edit_file".into(),
+            arguments: serde_json::json!({
+                "path": "src/main.rs",
+                "old_text": "fn main() {\n    println!(\"hi\");\n}",
+            }),
+            permission_level: PermissionLevel::Destructive,
+        });
+
+        let rows = draw_permission_rows(&home, 80, 24);
+
+        let tool_row = rows.iter().find(|r| r.contains("Tool: edit_file")).unwrap();
+        assert!(tool_row.contains("[DESTRUCTIVE]"));
+        assert!(rows.iter().any(|r| r.contains("Arguments:")));
+
+        // Each argument renders as one row: name column + value column.
+        let path_row = rows.iter().find(|r| r.contains("src/main.rs")).unwrap();
+        let old_row = rows.iter().find(|r| r.contains("fn main()")).unwrap();
+        assert!(path_row.contains("path"));
+        assert!(old_row.contains("old_text"));
+        // Values start at the same column: the rows form an aligned table.
+        assert_eq!(
+            path_row.find("src/main.rs"),
+            old_row.find("fn main()"),
+            "value columns must align, rows: {path_row:?} / {old_row:?}"
+        );
+        // Multiline values are flattened with escaped newlines on a single row.
+        assert!(old_row.contains("\\n"));
+    }
+
+    #[test]
+    fn permission_prompt_truncates_long_values_and_caps_rows() {
+        let mut home = Home::new();
+        let mut args = serde_json::Map::new();
+        args.insert("long".into(), serde_json::Value::String("x".repeat(100)));
+        for i in 0..9 {
+            args.insert(
+                format!("arg{i}"),
+                serde_json::Value::String(format!("val{i}")),
+            );
+        }
+        home.pending_permissions.push(PendingPermission {
+            call_id: "c2".into(),
+            tool_name: "run".into(),
+            arguments: serde_json::Value::Object(args),
+            permission_level: PermissionLevel::Dangerous,
+        });
+
+        let rows = draw_permission_rows(&home, 80, 24);
+
+        // The long value is truncated to the value column with an ellipsis.
+        let long_row = rows.iter().find(|r| r.contains("xxxxx")).unwrap();
+        let x_count = long_row.matches('x').count();
+        assert!(
+            long_row.contains('…'),
+            "truncated row needs ellipsis: {long_row:?}"
+        );
+        assert!(
+            x_count < 100,
+            "value must be truncated, drew {x_count} chars"
+        );
+
+        // Only MAX_ARG_ROWS rows are drawn, with an overflow indicator for the rest.
+        assert!(rows.iter().any(|r| r.contains("… +4 more")));
+        assert!(!rows.iter().any(|r| r.contains("arg5")));
+    }
+
+    #[test]
+    fn permission_arg_rows_parses_object() {
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "line": 42,
+            "dry_run": true,
+        });
+        assert_eq!(
+            permission_arg_rows(&args),
+            vec![
+                ("path".into(), "src/main.rs".into()),
+                ("line".into(), "42".into()),
+                ("dry_run".into(), "true".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_arg_rows_formats_non_strings_as_compact_json() {
+        let args = serde_json::json!({ "files": ["a.rs", "b.rs"], "meta": {"k": "v"} });
+        let rows = permission_arg_rows(&args);
+        assert_eq!(rows[0].1, "[\"a.rs\",\"b.rs\"]");
+        assert_eq!(rows[1].1, "{\"k\":\"v\"}");
+    }
+
+    #[test]
+    fn permission_arg_rows_handles_non_object_arguments() {
+        assert!(permission_arg_rows(&serde_json::Value::Null).is_empty());
+        assert_eq!(
+            permission_arg_rows(&serde_json::json!("cmd")),
+            vec![("arguments".into(), "cmd".into())]
+        );
+    }
+
+    #[test]
+    fn truncate_chars_is_utf8_safe() {
+        assert_eq!(truncate_chars("short", 10), "short");
+        assert_eq!(truncate_chars("abcdef", 4), "abc…");
+        // Multibyte chars must not panic or split a code point.
+        assert_eq!(truncate_chars("héllo wörld", 5), "héll…");
+    }
+
+    #[test]
+    fn sanitize_arg_value_escapes_layout_breaking_whitespace() {
+        assert_eq!(
+            sanitize_arg_value("line one\nline two\r\ttabbed"),
+            "line one\\nline two\\r\\ttabbed"
+        );
     }
 }
