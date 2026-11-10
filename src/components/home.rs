@@ -317,6 +317,23 @@ impl Component for Home<'_> {
                     }
                 }
                 (KeyCode::Char('a'), _) => {
+                    // Approve current permission and remember for this conversation
+                    if let Some(perm) = self.pending_permissions.get(self.permission_index) {
+                        let call_id = perm.call_id.clone();
+                        let tool_name = perm.tool_name.clone();
+                        self.pending_permissions.remove(self.permission_index);
+                        if self.permission_index > 0
+                            && self.permission_index >= self.pending_permissions.len()
+                        {
+                            self.permission_index =
+                                self.pending_permissions.len().saturating_sub(1);
+                        }
+                        Action::ToolPermissionGrantedAlways { call_id, tool_name }
+                    } else {
+                        Action::Noop
+                    }
+                }
+                (KeyCode::Char('A'), _) => {
                     // Approve all remaining
                     self.pending_permissions.clear();
                     self.permission_index = 0;
@@ -864,10 +881,12 @@ impl Home<'_> {
         text.push(Line::default());
         text.push(Line::from(vec![
             Span::styled("y", Style::new().bold().fg(Color::Green)),
-            Span::raw("/Enter approve  "),
+            Span::raw("/Enter approve once  "),
             Span::styled("n", Style::new().bold().fg(Color::Red)),
             Span::raw("/Esc deny  "),
             Span::styled("a", Style::new().bold().fg(Color::Yellow)),
+            Span::raw(" always for this conversation  "),
+            Span::styled("A", Style::new().bold().fg(Color::Yellow)),
             Span::raw(" approve all"),
         ]));
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -42,6 +44,9 @@ pub struct Conversation {
     pub session_cost: f64,
     /// The active persona for this conversation.
     pub persona: Persona,
+    /// Per-conversation tool permission overrides from "Always" selections.
+    /// Contains tool names that should be auto-approved for this conversation.
+    pub always_allow_tools: BTreeSet<String>,
 }
 
 impl Conversation {
@@ -62,6 +67,7 @@ impl Conversation {
             last_prompt_tokens: None,
             session_cost: 0.0,
             persona: Persona::default(),
+            always_allow_tools: BTreeSet::new(),
         }
     }
 

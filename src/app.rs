@@ -415,7 +415,22 @@ impl<'a> App<'a> {
                     self.process_next_tool_call().await;
                 }
             }
-            Action::ToolPermissionRequest { call_id, .. } => {
+            Action::ToolPermissionRequest {
+                call_id, tool_name, ..
+            } => {
+                if self
+                    .home
+                    .conversation
+                    .always_allow_tools
+                    .contains(tool_name.as_str())
+                {
+                    if self.is_acp() {
+                        if let Some(acp) = self.acp_ref() {
+                            acp.respond_permission(call_id.clone(), true, true);
+                        }
+                        return;
+                    }
+                }
                 if self.is_acp() {
                     self.acp_pending_permissions.push(call_id.clone());
                 }
@@ -458,6 +473,23 @@ impl<'a> App<'a> {
                     self.tool_results_received += 1;
                     self.check_tool_results_complete().await;
                 }
+            }
+            Action::ToolPermissionGrantedAlways { call_id, tool_name } => {
+                self.home
+                    .conversation
+                    .always_allow_tools
+                    .insert(tool_name.clone());
+
+                if self.is_acp() {
+                    self.acp_pending_permissions.retain(|id| id != call_id);
+                    if let Some(acp) = self.acp_ref() {
+                        acp.respond_permission(call_id.clone(), true, true);
+                    }
+                } else {
+                    self.execute_tool(call_id);
+                }
+
+                self.persist_session_config();
             }
             Action::ToolPermissionGrantAll => {
                 if self.is_acp() {
@@ -978,11 +1010,16 @@ impl<'a> App<'a> {
                 PermissionLevel::Destructive
             };
 
-            let should_auto_approve = match permission_level {
-                PermissionLevel::ReadOnly => self.config.tools.auto_approve_read,
-                PermissionLevel::Destructive => self.config.tools.auto_approve_write,
-                PermissionLevel::Dangerous => self.config.tools.auto_approve_execute,
-            };
+            let should_auto_approve = self
+                .home
+                .conversation
+                .always_allow_tools
+                .contains(tc.fn_name.as_str())
+                || match permission_level {
+                    PermissionLevel::ReadOnly => self.config.tools.auto_approve_read,
+                    PermissionLevel::Destructive => self.config.tools.auto_approve_write,
+                    PermissionLevel::Dangerous => self.config.tools.auto_approve_execute,
+                };
 
             if should_auto_approve {
                 debug!("Auto-approving tool call: {} ({})", tc.fn_name, tc.call_id);

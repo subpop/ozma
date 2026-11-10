@@ -2,10 +2,9 @@ use rusqlite_migration::{M, Migrations};
 
 /// All schema migrations, applied sequentially via `user_version` pragma.
 ///
-/// This is a single flat migration covering the complete schema.
-/// Pre-release: old databases are discarded rather than incrementally migrated.
-const MIGRATION_ARRAY: &[M] = &[M::up(
-    "CREATE TABLE conversations (
+const MIGRATION_ARRAY: &[M] = &[
+    M::up(
+        "CREATE TABLE conversations (
             id              TEXT PRIMARY KEY,
             title           TEXT NOT NULL,
             provider        TEXT NOT NULL DEFAULT '',
@@ -54,7 +53,12 @@ const MIGRATION_ARRAY: &[M] = &[M::up(
 
         CREATE INDEX idx_attachments_message
             ON attachments(message_id);",
-)];
+    ),
+    M::up(
+        "ALTER TABLE conversations
+         ADD COLUMN tool_permissions TEXT NOT NULL DEFAULT '[]';",
+    ),
+];
 
 pub const MIGRATIONS: Migrations<'_> = Migrations::from_slice(MIGRATION_ARRAY);
 

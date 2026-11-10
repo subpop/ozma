@@ -78,6 +78,8 @@ pub enum Action {
     ToolPermissionGranted { call_id: String },
     /// User denied a tool execution.
     ToolPermissionDenied { call_id: String },
+    /// User approved this tool and selected "Always" for the current conversation.
+    ToolPermissionGrantedAlways { call_id: String, tool_name: String },
     /// Approve all pending tool permissions.
     ToolPermissionGrantAll,
     /// A tool finished executing. (call_id, fn_name, content parts, success, blobs)

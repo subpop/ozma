@@ -85,10 +85,19 @@ impl Store {
     /// Save a new conversation (header only, no messages).
     /// All session config (provider, model, params) is read from the Conversation.
     pub fn save_conversation(&self, conversation: &Conversation) -> Result<()> {
+        let tool_permissions = serde_json::to_string(
+            &conversation
+                .always_allow_tools
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| eyre!("Failed to serialize tool permissions: {}", e))?;
+
         self.conn.execute(
             "INSERT OR REPLACE INTO conversations
-             (id, title, provider, model, temperature, top_p, max_tokens, persona, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, title, provider, model, temperature, top_p, max_tokens, persona, tool_permissions, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 conversation.id.to_string(),
                 conversation.title,
@@ -98,6 +107,7 @@ impl Store {
                 conversation.param_overrides.top_p,
                 conversation.param_overrides.max_tokens,
                 conversation.persona.name(),
+                tool_permissions,
                 conversation.created_at.timestamp(),
                 conversation.updated_at.timestamp(),
             ],
@@ -120,11 +130,20 @@ impl Store {
 
     /// Persist the session's config (provider, model, params) to the database.
     pub fn update_conversation_config(&self, conversation: &Conversation) -> Result<()> {
+        let tool_permissions = serde_json::to_string(
+            &conversation
+                .always_allow_tools
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| eyre!("Failed to serialize tool permissions: {}", e))?;
+
         self.conn.execute(
             "UPDATE conversations
              SET provider = ?1, model = ?2, temperature = ?3, top_p = ?4,
-                 max_tokens = ?5, persona = ?6, updated_at = ?7
-             WHERE id = ?8",
+                 max_tokens = ?5, persona = ?6, tool_permissions = ?7, updated_at = ?8
+             WHERE id = ?9",
             params![
                 conversation.provider,
                 conversation.model,
@@ -132,6 +151,7 @@ impl Store {
                 conversation.param_overrides.top_p,
                 conversation.param_overrides.max_tokens,
                 conversation.persona.name(),
+                tool_permissions,
                 conversation.updated_at.timestamp(),
                 conversation.id.to_string(),
             ],
@@ -192,7 +212,7 @@ impl Store {
         // Load conversation header (including session config)
         let mut stmt = self.conn.prepare(
             "SELECT id, title, provider, model, temperature, top_p, max_tokens,
-                    persona, created_at, updated_at
+                    persona, tool_permissions, created_at, updated_at
              FROM conversations WHERE id = ?1",
         )?;
 
@@ -205,8 +225,9 @@ impl Store {
             let top_p: Option<f64> = row.get(5)?;
             let max_tokens: Option<u32> = row.get(6)?;
             let persona_str: String = row.get(7)?;
-            let created_ts: i64 = row.get(8)?;
-            let updated_ts: i64 = row.get(9)?;
+            let tool_permissions: String = row.get(8)?;
+            let created_ts: i64 = row.get(9)?;
+            let updated_ts: i64 = row.get(10)?;
 
             Ok((
                 id_str,
@@ -217,6 +238,7 @@ impl Store {
                 top_p,
                 max_tokens,
                 persona_str,
+                tool_permissions,
                 created_ts,
                 updated_ts,
             ))
@@ -231,6 +253,7 @@ impl Store {
             top_p,
             max_tokens,
             persona_str,
+            tool_permissions,
             created_ts,
             updated_ts,
         ) = match conv_result {
@@ -320,6 +343,10 @@ impl Store {
             max_tokens,
         };
         conversation.persona = Persona::from_name(&persona_str);
+        conversation.always_allow_tools = serde_json::from_str::<Vec<String>>(&tool_permissions)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         conversation.messages = messages;
         conversation.created_at = Utc.timestamp_opt(created_ts, 0).unwrap();
         conversation.updated_at = Utc.timestamp_opt(updated_ts, 0).unwrap();
@@ -563,6 +590,7 @@ mod tests {
         conv.model = "claude".to_string();
         conv.param_overrides.temperature = Some(0.2);
         conv.persona = Persona::OzCode;
+        conv.always_allow_tools.insert("run_command".to_string());
         store.update_conversation_config(&conv).unwrap();
 
         let loaded = store.load_conversation(&conv.id).unwrap().unwrap();
@@ -570,5 +598,6 @@ mod tests {
         assert_eq!(loaded.model, "claude");
         assert_eq!(loaded.param_overrides.temperature, Some(0.2));
         assert_eq!(loaded.persona, Persona::OzCode);
+        assert!(loaded.always_allow_tools.contains("run_command"));
     }
 }
