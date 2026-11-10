@@ -54,6 +54,10 @@
           "items": { "type": "string" },
           "description": "Optional. If omitted, ozma attempts provider model discovery."
         },
+        "default_model": {
+          "type": "string",
+          "description": "Optional. Explicit default model for this provider; when omitted, the first model is used."
+        },
         "api_key_env": { "type": "string" },
         "api_key_cmd": { "type": "string" },
         "base_url": { "type": "string" },

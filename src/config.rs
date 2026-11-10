@@ -176,10 +176,14 @@ pub struct ProviderConfig {
     pub name: String,
 
     /// Available model identifiers (e.g., ["gpt-4o-mini", "gpt-4o", "o3-mini"]).
-    /// The first entry is the default model. When omitted, ozma queries the provider
-    /// at startup to discover available models.
+    /// When omitted, ozma queries the provider at startup to discover available models.
     #[serde(default)]
     pub models: Option<Vec<String>>,
+
+    /// Explicit default model for this provider.
+    /// If unset, ozma falls back to the first configured/discovered model.
+    #[serde(default)]
+    pub default_model: Option<String>,
 
     /// Environment variable name holding the API key (e.g., "OPENAI_API_KEY").
     /// If not set, genai's default env var resolution is used.
@@ -242,9 +246,14 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    /// The default model (first in the explicit models list), if configured.
+    /// The default model for this provider.
+    /// Prefers explicit `default_model`, then falls back to the first configured model.
     pub fn default_model(&self) -> Option<&str> {
-        self.models.as_ref()?.first().map(|s| s.as_str())
+        self.default_model.as_deref().or_else(|| {
+            self.models
+                .as_ref()
+                .and_then(|models| models.first().map(String::as_str))
+        })
     }
 
     /// Extract model parameters from this provider config.
@@ -437,6 +446,7 @@ impl Default for Config {
             ProviderConfig {
                 name: "gemini".to_string(),
                 models: Some(vec!["gemini-2.5-flash".to_string()]),
+                default_model: None,
                 api_key_env: None,
                 api_key_cmd: None,
                 base_url: None,
@@ -546,6 +556,31 @@ mod tests {
         let openai = config.provider.get("openai").unwrap();
         assert_eq!(openai.default_model(), Some("gpt-4o-mini"));
         assert_eq!(openai.model_params().temperature, Some(0.7));
+    }
+
+    #[test]
+    fn provider_default_model_prefers_explicit_field() {
+        let config = parse_config(
+            r#"{
+  "provider": {
+    "openai": {
+      "adapter": "openai",
+      "models": ["gpt-4o-mini", "gpt-4o"],
+      "default_model": "gpt-4o"
+    },
+    "anthropic": {
+      "adapter": "anthropic",
+      "default_model": "claude-sonnet-4-0"
+    }
+  }
+}"#,
+        );
+
+        assert_eq!(config.provider["openai"].default_model(), Some("gpt-4o"));
+        assert_eq!(
+            config.provider["anthropic"].default_model(),
+            Some("claude-sonnet-4-0")
+        );
     }
 
     #[test]
@@ -762,6 +797,7 @@ mod tests {
                 ProviderConfig {
                     name: "openai".to_string(),
                     models: Some(vec!["gpt-4o".to_string()]),
+                    default_model: None,
                     api_key_env: None,
                     api_key_cmd: None,
                     base_url: None,

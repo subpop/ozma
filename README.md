@@ -71,6 +71,7 @@ A JSON Schema is available at `docs/config.schema.json` (published at `https://s
 If a `.ozma.json` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Objects merge by key; arrays like `mcp_servers` append to the base list.)
 
 Providers are configured as an object map, where each key is the provider name.
+Set `default_model` to explicitly choose the provider's startup model; if omitted, ozma uses the first model in `models` (or the first discovered model when `models` is omitted).
 
 Example local override (`./.ozma.json`):
 
@@ -102,7 +103,8 @@ User-level base config example (`config.json`):
   "provider": {
     "openai": {
       "adapter": "openai",
-      "models": ["gpt-4o-mini", "gpt-4o", "o3-mini"]
+      "models": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+      "default_model": "gpt-4o"
     },
     "anthropic": {
       "adapter": "anthropic",

@@ -120,6 +120,7 @@ pub(crate) async fn discover_models(config: &ProviderConfig) -> Vec<String> {
 impl Provider {
     /// Build a Provider from the application config.
     /// When `models` is not set in config, queries the provider API to discover them.
+    /// Model selection prefers `default_model`, then the first available model.
     pub async fn from_config(config: &crate::config::Config) -> Result<Self> {
         let provider_config = config
             .active_provider()
@@ -874,6 +875,7 @@ mod tests {
         ProviderConfig {
             name: "test".to_string(),
             models: Some(vec!["model".to_string()]),
+            default_model: None,
             api_key_env: None,
             api_key_cmd: None,
             base_url: None,
