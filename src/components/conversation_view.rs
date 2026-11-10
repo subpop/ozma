@@ -392,6 +392,25 @@ impl ConversationView {
         rows
     }
 
+    fn pending_tools_block(anim_tick: u8) -> MessageBlock {
+        let text = Text::from(Line::from(Span::styled(
+            Self::streaming_dots(anim_tick),
+            theme::STREAMING_INDICATOR,
+        )));
+
+        MessageBlock {
+            message_id: Uuid::nil(),
+            total_height: 1,
+            segments: vec![MessageSegment::Text {
+                text,
+                code_blocks: Vec::new(),
+            }],
+            role: Role::Assistant,
+            raw_content: String::new(),
+            tool_toggle_footer: None,
+        }
+    }
+
     /// Build the rendered segments for a single message.
     fn build_message_block(
         msg: &Message,
@@ -684,6 +703,7 @@ impl ConversationView {
         area: Rect,
         conversation: &Conversation,
         store: &Store,
+        executing_tools: bool,
     ) {
         // Outer container (no border, just provides the area)
         let inner = area;
@@ -717,7 +737,7 @@ impl ConversationView {
 
         // Build all message blocks and compute total height
         let anim_tick = self.anim_tick;
-        let blocks: Vec<MessageBlock> = conversation
+        let mut blocks: Vec<MessageBlock> = conversation
             .messages
             .iter()
             .map(|msg| {
@@ -736,6 +756,10 @@ impl ConversationView {
                 )
             })
             .collect();
+
+        if executing_tools {
+            blocks.push(Self::pending_tools_block(anim_tick));
+        }
 
         let total_height: u16 = blocks.iter().map(|b| b.total_height).sum::<u16>()
             + (blocks.len().saturating_sub(1) as u16) * MESSAGE_GAP;

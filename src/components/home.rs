@@ -194,6 +194,7 @@ impl Home<'_> {
             layout[0],
             &self.conversation,
             store,
+            self.executing_tools,
         );
 
         // Render input
