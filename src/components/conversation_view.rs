@@ -336,7 +336,61 @@ impl ConversationView {
             .replace('\t', "\\t")
     }
 
-    fn tool_argument_table_rows(args: &serde_json::Value) -> Vec<String> {
+    fn wrap_on_word_breaks(value: &str, width: usize) -> Vec<String> {
+        if width == 0 {
+            return vec![String::new()];
+        }
+
+        let mut out: Vec<String> = Vec::new();
+        let mut line = String::new();
+
+        for word in value.split_whitespace() {
+            if word.len() > width {
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+
+                let mut chunk = String::new();
+                for ch in word.chars() {
+                    chunk.push(ch);
+                    if chunk.len() == width {
+                        out.push(std::mem::take(&mut chunk));
+                    }
+                }
+                if !chunk.is_empty() {
+                    line = chunk;
+                }
+                continue;
+            }
+
+            let candidate_len = if line.is_empty() {
+                word.len()
+            } else {
+                line.len() + 1 + word.len()
+            };
+            if candidate_len <= width {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(word);
+            } else {
+                out.push(std::mem::take(&mut line));
+                line.push_str(word);
+            }
+        }
+
+        if !line.is_empty() {
+            out.push(line);
+        }
+
+        if out.is_empty() {
+            vec![String::new()]
+        } else {
+            out
+        }
+    }
+
+    fn tool_argument_table_rows(args: &serde_json::Value, content_width: u16) -> Vec<String> {
         let mut entries: Vec<(String, String)> = Vec::new();
 
         match args {
@@ -361,31 +415,74 @@ impl ConversationView {
             }
         }
 
-        let arg_width = entries
+        // Table rows are rendered with a "  " prefix in the caller.
+        let table_width_limit = content_width.saturating_sub(2) as usize;
+
+        // Minimum box width with 1-character columns: "│ x │ y │".
+        if table_width_limit < 9 {
+            let mut rows = Vec::new();
+            rows.push("Argument | Value".to_string());
+            for (arg, val) in entries {
+                rows.push(format!("{arg} | {val}"));
+            }
+            return rows;
+        }
+
+        let preferred_arg = entries
             .iter()
             .map(|(arg, _)| arg.len())
             .max()
             .unwrap_or(0)
             .max("Argument".len());
-        let val_width = entries
+        let preferred_val = entries
             .iter()
             .map(|(_, val)| val.len())
             .max()
             .unwrap_or(0)
             .max("Value".len());
 
+        let usable = table_width_limit.saturating_sub(7);
+        let mut arg_width = preferred_arg;
+        let mut val_width = preferred_val;
+
+        if arg_width + val_width > usable {
+            arg_width = preferred_arg.min((usable * 35) / 100).max(1);
+            if arg_width >= usable {
+                arg_width = usable.saturating_sub(1).max(1);
+            }
+            val_width = usable.saturating_sub(arg_width).max(1);
+        }
+
         let top = format!("┌─{}─┬─{}─┐", "─".repeat(arg_width), "─".repeat(val_width));
         let mid = format!("├─{}─┼─{}─┤", "─".repeat(arg_width), "─".repeat(val_width));
         let bottom = format!("└─{}─┴─{}─┘", "─".repeat(arg_width), "─".repeat(val_width));
 
-        let mut rows = vec![
-            top,
-            format!("│ {:<arg_width$} │ {:<val_width$} │", "Argument", "Value"),
-            mid,
-        ];
+        let mut rows = vec![top];
+
+        let header_arg = Self::wrap_on_word_breaks("Argument", arg_width);
+        let header_val = Self::wrap_on_word_breaks("Value", val_width);
+        let header_lines = header_arg.len().max(header_val.len());
+        for i in 0..header_lines {
+            let arg = header_arg.get(i).map_or("", String::as_str);
+            let val = header_val.get(i).map_or("", String::as_str);
+            rows.push(format!("│ {:<arg_width$} │ {:<val_width$} │", arg, val));
+        }
+
+        rows.push(mid);
 
         for (arg, val) in entries {
-            rows.push(format!("│ {:<arg_width$} │ {:<val_width$} │", arg, val));
+            let arg_lines = Self::wrap_on_word_breaks(&arg, arg_width);
+            let val_lines = Self::wrap_on_word_breaks(&val, val_width);
+            let row_lines = arg_lines.len().max(val_lines.len());
+
+            for i in 0..row_lines {
+                let arg_part = arg_lines.get(i).map_or("", String::as_str);
+                let val_part = val_lines.get(i).map_or("", String::as_str);
+                rows.push(format!(
+                    "│ {:<arg_width$} │ {:<val_width$} │",
+                    arg_part, val_part
+                ));
+            }
         }
 
         rows.push(bottom);
@@ -474,7 +571,9 @@ impl ConversationView {
                                     ratatui::style::Style::new().fg(Color::Cyan).bold(),
                                 ),
                             ]));
-                            for row in Self::tool_argument_table_rows(&tc.fn_arguments) {
+                            for row in
+                                Self::tool_argument_table_rows(&tc.fn_arguments, content_width)
+                            {
                                 rendered.push_line(Line::from(Span::styled(
                                     format!("  {row}"),
                                     ratatui::style::Style::new().dim(),
