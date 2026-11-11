@@ -13,8 +13,8 @@ use crate::persona::Persona;
 /// A persona entry in the picker.
 #[derive(Clone, Debug)]
 struct PersonaEntry {
-    name: &'static str,
-    description: &'static str,
+    name: String,
+    description: String,
     active: bool,
 }
 
@@ -38,15 +38,15 @@ impl PersonaPicker {
         }
     }
 
-    /// Show the picker, populating entries from all personas.
-    pub fn show(&mut self, active: &Persona) {
+    /// Show the picker, populating entries from all available personas.
+    pub fn show(&mut self, personas: &[Persona], active: &Persona) {
         self.visible = true;
         self.filter.clear();
-        self.entries = Persona::all()
+        self.entries = personas
             .iter()
             .map(|p| PersonaEntry {
-                name: p.name(),
-                description: p.description(),
+                name: p.name().to_string(),
+                description: p.description().to_string(),
                 active: p == active,
             })
             .collect();
@@ -121,7 +121,7 @@ impl PersonaPicker {
             (KeyCode::Enter, _) => {
                 if let Some(selected) = self.list_state.selected() {
                     if let Some(&idx) = self.filtered.get(selected) {
-                        let name = self.entries[idx].name.to_string();
+                        let name = self.entries[idx].name.clone();
                         self.hide();
                         return Action::SwitchPersona(name);
                     }
@@ -198,9 +198,12 @@ impl PersonaPicker {
 
                 ListItem::new(Line::from(vec![
                     Span::styled(prefix, prefix_style),
-                    Span::styled(entry.name, name_style),
+                    Span::styled(entry.name.as_str(), name_style),
                     Span::raw(pad_str),
-                    Span::styled(entry.description, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        entry.description.as_str(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]))
             })
             .collect();

@@ -13,7 +13,7 @@ ozma provides a keyboard-driven TUI for conversing with large language models, w
 - **Multi-provider LLM support** -- OpenAI, Anthropic, Gemini, and any OpenAI-compatible endpoint (e.g. Ollama) via [genai](https://crates.io/crates/genai)
 - **ACP agents** -- use external coding agents (e.g. OpenCode) over the [Agent Client Protocol](https://agentclientprotocol.com/) as an alternate source alongside direct providers
 - **Multiple models per provider** -- list all available models, switch at runtime via the command palette
-- **Personas** -- built-in modes (`ozma`, `ozcode`, `ozreview`, `ozplan`) that shape the system prompt; switch with `Ctrl+.`
+- **Personas** -- built-in modes (`ozma`, `ozcode`, `ozreview`, `ozplan`) plus user-defined personas from config; switch with `Ctrl+.`
 - **Streaming responses** -- tokens appear as they arrive
 - **Multimodal input** -- paste images from the clipboard (`Ctrl+V`), attach images or inline text files with `@path` (with tab completion)
 - **Built-in tools** -- file I/O, directory listing, shell commands, web fetch, web search
@@ -100,6 +100,12 @@ User-level base config example (`config.json`):
   "$schema": "https://subpop.github.io/ozma/config.schema.json",
   "default_source": "openai",
   "default_persona": "ozma",
+  "personas": {
+    "ops": {
+      "description": "Operations/SRE",
+      "system_prompt": "You are an operations assistant. Prioritize reliability, incident response, and clear runbooks."
+    }
+  },
   "provider": {
     "openai": {
       "adapter": "openai",
@@ -169,12 +175,28 @@ Manual smoke checklist (requires an ACP-capable binary such as `opencode`):
 
 ### Personas
 
+Built-in personas:
+
 | Name | Role |
 |------|------|
 | `ozma` | General-purpose assistant |
 | `ozcode` | Coding-focused |
 | `ozreview` | Code review |
 | `ozplan` | Planning and architecture |
+
+You can define additional personas in config under `personas`:
+
+```json
+{
+  "default_persona": "ops",
+  "personas": {
+    "ops": {
+      "description": "Operations/SRE",
+      "system_prompt": "You are an operations assistant. Focus on reliability and incident response."
+    }
+  }
+}
+```
 
 Each persona sets its own system prompt. Environment context (cwd, platform, date, git branch) is appended automatically.
 

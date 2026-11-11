@@ -5,6 +5,8 @@ use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use crate::persona::Persona;
+
 /// Top-level application configuration, loaded from `~/.config/ozma/config.json`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -28,9 +30,24 @@ pub struct Config {
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
 
-    /// The default persona name (e.g., "ozma", "ozcode", "ozreview", "ozplan").
+    /// The default persona name (built-in or custom key from `personas`).
     #[serde(default)]
     pub default_persona: Option<String>,
+
+    /// User-defined persona configs keyed by persona name.
+    #[serde(default)]
+    pub personas: BTreeMap<String, PersonaConfig>,
+}
+
+/// Configuration for a user-defined persona.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PersonaConfig {
+    /// Human-readable description shown in the picker.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Persona system prompt text.
+    pub system_prompt: String,
 }
 
 /// Which kind of backend a configured source refers to.
@@ -355,6 +372,43 @@ impl Config {
                 }
             }
         }
+
+        if let Some(default_persona) = &self.default_persona {
+            let builtin = Persona::from_builtin_name(default_persona).is_some();
+            let custom = self
+                .personas
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(default_persona));
+            if !builtin && !custom {
+                return Err(eyre!(
+                    "default_persona '{}' is not defined (expected a built-in persona or a key in personas)",
+                    default_persona
+                ));
+            }
+        }
+
+        let mut seen_persona_names: HashMap<String, &str> = HashMap::new();
+        for (name, persona) in &self.personas {
+            if name.trim().is_empty() {
+                return Err(eyre!("persona names must not be empty"));
+            }
+            if persona.system_prompt.trim().is_empty() {
+                return Err(eyre!(
+                    "persona '{}' has an empty system_prompt; provide non-empty prompt text",
+                    name
+                ));
+            }
+
+            let folded = name.to_ascii_lowercase();
+            if let Some(existing) = seen_persona_names.insert(folded, name.as_str()) {
+                return Err(eyre!(
+                    "persona names '{}' and '{}' conflict; persona names are case-insensitive",
+                    existing,
+                    name
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -436,6 +490,53 @@ impl Config {
             _ => None,
         }
     }
+
+    /// Resolve a persona name from user-defined personas and built-ins.
+    /// Falls back to `Persona::default()` when unknown.
+    pub fn resolve_persona(&self, name: &str) -> Persona {
+        if let Some(persona) = self
+            .personas
+            .iter()
+            .find(|(configured_name, _)| configured_name.eq_ignore_ascii_case(name))
+            .map(|(configured_name, cfg)| Self::persona_from_config_entry(configured_name, cfg))
+        {
+            return persona;
+        }
+
+        if let Some(persona) = Persona::from_builtin_name(name) {
+            return persona;
+        }
+
+        Persona::default()
+    }
+
+    /// All available personas (built-in plus user-defined).
+    /// User-defined entries with built-in names override the built-in prompt/description.
+    pub fn available_personas(&self) -> Vec<Persona> {
+        let mut personas = Persona::builtins();
+
+        for (name, cfg) in &self.personas {
+            let custom = Self::persona_from_config_entry(name, cfg);
+
+            if let Some(idx) = personas.iter().position(|p| p.matches_name(name)) {
+                personas[idx] = custom;
+            } else {
+                personas.push(custom);
+            }
+        }
+
+        personas
+    }
+
+    fn persona_from_config_entry(name: &str, cfg: &PersonaConfig) -> Persona {
+        Persona::custom(
+            name.to_string(),
+            cfg.description
+                .clone()
+                .unwrap_or_else(|| "Custom".to_string()),
+            cfg.system_prompt.clone(),
+        )
+    }
 }
 
 impl Default for Config {
@@ -466,6 +567,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             mcp_servers: Vec::new(),
             default_persona: None,
+            personas: BTreeMap::new(),
         }
     }
 }
@@ -817,6 +919,7 @@ mod tests {
             },
             mcp_servers: Vec::new(),
             default_persona: None,
+            personas: BTreeMap::new(),
         })
         .unwrap();
 
@@ -880,5 +983,99 @@ mod tests {
             merged.provider["openai"].default_model(),
             Some("gpt-4o-mini")
         );
+    }
+
+    #[test]
+    fn resolve_persona_supports_custom_and_builtin() {
+        let config = parse_config(
+            r#"{
+  "default_persona": "ops",
+  "personas": {
+    "ops": {
+      "description": "Operations",
+      "system_prompt": "You are an ops assistant."
+    }
+  }
+}"#,
+        );
+
+        let custom = config.resolve_persona("ops");
+        assert_eq!(custom.name(), "ops");
+        assert_eq!(custom.description(), "Operations");
+        assert_eq!(custom.system_prompt(), "You are an ops assistant.");
+
+        let builtin = config.resolve_persona("ozcode");
+        assert_eq!(builtin, Persona::ozcode());
+    }
+
+    #[test]
+    fn resolve_persona_prefers_custom_override_for_builtin_name() {
+        let config = parse_config(
+            r#"{
+  "default_persona": "ozcode",
+  "personas": {
+    "ozcode": {
+      "description": "Custom code mode",
+      "system_prompt": "You are a strict custom coding assistant."
+    }
+  }
+}"#,
+        );
+
+        let resolved = config.resolve_persona("ozcode");
+        assert_eq!(resolved.description(), "Custom code mode");
+        assert_eq!(
+            resolved.system_prompt(),
+            "You are a strict custom coding assistant."
+        );
+
+        let available = config.available_personas();
+        let listed = available
+            .iter()
+            .find(|p| p.matches_name("ozcode"))
+            .expect("ozcode should be listed");
+        assert_eq!(listed.system_prompt(), resolved.system_prompt());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_default_persona_and_empty_custom_prompt() {
+        let unknown_default = parse_config(
+            r#"{
+  "default_persona": "does-not-exist"
+}"#,
+        );
+        assert!(unknown_default.validate().is_err());
+
+        let empty_prompt = parse_config(
+            r#"{
+  "personas": {
+    "ops": {
+      "system_prompt": "   "
+    }
+  }
+}"#,
+        );
+        assert!(empty_prompt.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_case_insensitive_duplicate_persona_names() {
+        let duplicates = parse_config(
+            r#"{
+  "personas": {
+    "ops": {
+      "system_prompt": "A"
+    },
+    "OPS": {
+      "system_prompt": "B"
+    }
+  }
+}"#,
+        );
+
+        let err = duplicates.validate().unwrap_err().to_string();
+        assert!(err.contains("ops"));
+        assert!(err.contains("OPS"));
+        assert!(err.contains("case-insensitive"));
     }
 }

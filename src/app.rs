@@ -227,7 +227,9 @@ impl<'a> App<'a> {
             self.home.set_config_params(provider_config.model_params());
         }
 
-        // Set default persona from config
+        // Initialize available personas and apply default persona from config.
+        self.home
+            .set_available_personas(self.config.available_personas());
         self.home.conversation.persona = self.default_persona();
 
         // Initialize components
@@ -1166,7 +1168,7 @@ impl<'a> App<'a> {
         self.config
             .default_persona
             .as_ref()
-            .map(|name| Persona::from_name(name))
+            .map(|name| self.config.resolve_persona(name))
             .unwrap_or_default()
     }
 
@@ -1393,7 +1395,10 @@ impl<'a> App<'a> {
     async fn load_session(&mut self, id: &SessionRef) {
         match id {
             SessionRef::Local(uuid) => match self.store.load_conversation(uuid) {
-                Ok(Some(conversation)) => {
+                Ok(Some(mut conversation)) => {
+                    let persona_name = conversation.persona.name().to_string();
+                    conversation.persona = self.config.resolve_persona(&persona_name);
+
                     self.conversation_saved = true;
                     self.switch_to_session_provider(&conversation).await;
                     let _ = self

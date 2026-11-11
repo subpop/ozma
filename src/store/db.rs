@@ -342,7 +342,8 @@ impl Store {
             top_p,
             max_tokens,
         };
-        conversation.persona = Persona::from_name(&persona_str);
+        conversation.persona = Persona::from_builtin_name(&persona_str)
+            .unwrap_or_else(|| Persona::custom(persona_str.clone(), "Custom", String::new()));
         conversation.always_allow_tools = serde_json::from_str::<Vec<String>>(&tool_permissions)
             .unwrap_or_default()
             .into_iter()
@@ -589,7 +590,7 @@ mod tests {
         conv.provider = "anthropic".to_string();
         conv.model = "claude".to_string();
         conv.param_overrides.temperature = Some(0.2);
-        conv.persona = Persona::OzCode;
+        conv.persona = Persona::ozcode();
         conv.always_allow_tools.insert("run_command".to_string());
         store.update_conversation_config(&conv).unwrap();
 
@@ -597,7 +598,7 @@ mod tests {
         assert_eq!(loaded.provider, "anthropic");
         assert_eq!(loaded.model, "claude");
         assert_eq!(loaded.param_overrides.temperature, Some(0.2));
-        assert_eq!(loaded.persona, Persona::OzCode);
+        assert_eq!(loaded.persona, Persona::ozcode());
         assert!(loaded.always_allow_tools.contains("run_command"));
     }
 }

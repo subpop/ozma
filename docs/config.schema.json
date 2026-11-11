@@ -11,7 +11,14 @@
     },
     "default_persona": {
       "type": "string",
-      "description": "Default persona name (e.g. ozma, ozcode, ozreview, ozplan)."
+      "description": "Default persona name (built-in or a key from personas)."
+    },
+    "personas": {
+      "type": "object",
+      "description": "User-defined personas keyed by persona name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/personaConfig"
+      }
     },
     "provider": {
       "type": "object",
@@ -129,6 +136,15 @@
           "default": {}
         },
         "url": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "personaConfig": {
+      "type": "object",
+      "required": ["system_prompt"],
+      "properties": {
+        "description": { "type": "string" },
+        "system_prompt": { "type": "string" }
       },
       "additionalProperties": false
     }

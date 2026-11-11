@@ -56,6 +56,8 @@ pub struct Home<'a> {
     model_picker: ModelPicker,
     /// The persona picker overlay.
     persona_picker: PersonaPicker,
+    /// Available personas (built-in + user-defined).
+    available_personas: Vec<Persona>,
     /// The parameter input overlay.
     param_input: ParamInput,
     /// The MCP server log overlay.
@@ -92,6 +94,7 @@ impl<'a> Home<'a> {
             command_palette: CommandPalette::new(),
             model_picker: ModelPicker::new(),
             persona_picker: PersonaPicker::new(),
+            available_personas: Persona::builtins(),
             param_input: ParamInput::new(),
             mcp_log: McpLogView::new(),
             config_model_params: ModelParams::default(),
@@ -130,6 +133,11 @@ impl<'a> Home<'a> {
     /// Set the config-level model params (from the active provider).
     pub fn set_config_params(&mut self, params: ModelParams) {
         self.config_model_params = params;
+    }
+
+    /// Set the personas shown in the picker.
+    pub fn set_available_personas(&mut self, personas: Vec<Persona>) {
+        self.available_personas = personas;
     }
 
     /// Replace the current conversation with a loaded one.
@@ -529,7 +537,8 @@ impl Component for Home<'_> {
             }
             Action::OpenPersonaPicker => {
                 self.command_palette.hide();
-                self.persona_picker.show(&self.conversation.persona);
+                self.persona_picker
+                    .show(&self.available_personas, &self.conversation.persona);
                 self.input.set_focused(false);
             }
             Action::ClosePersonaPicker => {
@@ -539,7 +548,12 @@ impl Component for Home<'_> {
                 }
             }
             Action::SwitchPersona(name) => {
-                self.conversation.persona = Persona::from_name(name);
+                self.conversation.persona = self
+                    .available_personas
+                    .iter()
+                    .find(|p| p.matches_name(name))
+                    .cloned()
+                    .unwrap_or_else(|| Persona::from_name(name));
                 if !self.streaming && !self.executing_tools {
                     self.input.set_focused(true);
                 }
