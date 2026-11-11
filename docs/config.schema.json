@@ -5,6 +5,10 @@
   "description": "Schema for ozma config.json and .ozma.json",
   "type": "object",
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON schema reference for configuration validation"
+    },
     "default_source": {
       "type": "string",
       "description": "Default source name (provider key or agent name)."
