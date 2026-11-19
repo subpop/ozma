@@ -1,6 +1,6 @@
 //! Convert ozma MCP config into ACP `mcpServers` for session/new|load.
 
-use agent_client_protocol::schema::v1::{EnvVariable, McpServer, McpServerHttp, McpServerStdio};
+use agent_client_protocol::v1::schema::{EnvVariable, McpServer, McpServerHttp, McpServerStdio};
 
 use crate::config::McpServerConfig;
 

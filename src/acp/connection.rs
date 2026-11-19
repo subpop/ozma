@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
     CreateTerminalResponse, DeleteSessionRequest, FileSystemCapabilities, Implementation,
     InitializeRequest, KillTerminalRequest, KillTerminalResponse, ListSessionsRequest,
@@ -16,7 +16,8 @@ use agent_client_protocol::schema::v1::{
     TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo};
+use agent_client_protocol::v1::ConnectionTo;
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use color_eyre::eyre::{Result, eyre};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -138,7 +139,7 @@ impl AcpConnection {
             let terminals_release = terminals_fs.clone();
 
             let result = Client
-                .builder()
+                .v1()
                 .name("ozma")
                 .on_receive_notification(
                     {

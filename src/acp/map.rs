@@ -1,6 +1,6 @@
 //! Map ACP types onto ozma domain types / events.
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     ContentBlock, EmbeddedResourceResource, SessionUpdate, TextContent, ToolCall, ToolCallContent,
     ToolCallUpdate,
 };
@@ -124,7 +124,7 @@ fn tool_call_update_summary(update: ToolCallUpdate) -> ToolCallUpdateSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{
+    use agent_client_protocol::v1::schema::{
         ContentChunk, SessionUpdate, TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
     };
 

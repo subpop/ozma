@@ -46,4 +46,4 @@ ratatui-image = { version = "11", default-features = false, features = [
     "image-defaults",
     "crossterm",
 ] }
-agent-client-protocol = { version = "3.5", features = ["process"] }
+agent-client-protocol = { version = "5.4", features = ["process"] }
