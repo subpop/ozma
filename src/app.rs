@@ -1818,6 +1818,11 @@ async fn execute_tool_by_name(
                 .execute(args, cancel)
                 .await
         }
+        "replace_lines" => {
+            crate::tools::replace_lines::ReplaceLines
+                .execute(args, cancel)
+                .await
+        }
         "list_directory" => {
             crate::tools::list_directory::ListDirectory
                 .execute(args, cancel)

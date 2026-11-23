@@ -88,7 +88,7 @@ pub struct ToolsConfig {
     #[serde(default = "default_true")]
     pub auto_approve_read: bool,
 
-    /// Whether to auto-approve destructive tools (write_file).
+    /// Whether to auto-approve destructive tools (write_file, replace_lines).
     /// Default: false.
     #[serde(default)]
     pub auto_approve_write: bool,

@@ -1,5 +1,6 @@
 pub mod list_directory;
 pub mod read_file;
+pub mod replace_lines;
 pub mod run_command;
 pub mod web_fetch;
 pub mod web_search;
@@ -96,6 +97,7 @@ impl ToolRegistry {
 
         registry.register(Box::new(read_file::ReadFile));
         registry.register(Box::new(write_file::WriteFile));
+        registry.register(Box::new(replace_lines::ReplaceLines));
         registry.register(Box::new(list_directory::ListDirectory));
         registry.register(Box::new(run_command::RunCommand));
         registry.register(Box::new(web_fetch::WebFetch));
@@ -166,6 +168,11 @@ mod tests {
     fn registry_get_and_is_builtin() {
         let registry = ToolRegistry::new();
         assert!(registry.get("read_file").is_some());
+        assert!(registry.is_builtin("replace_lines"));
+        assert_eq!(
+            registry.get("replace_lines").unwrap().permission_level(),
+            PermissionLevel::Destructive
+        );
         assert!(registry.is_builtin("read_file"));
         assert!(!registry.is_builtin("server__mcp_tool"));
         assert!(registry.get("missing").is_none());
