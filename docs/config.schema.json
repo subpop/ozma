@@ -139,7 +139,12 @@
           "additionalProperties": { "type": "string" },
           "default": {}
         },
-        "url": { "type": "string" }
+        "url": { "type": "string" },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this MCP server is enabled. Disabled servers are not started."
+        }
       },
       "additionalProperties": false
     },

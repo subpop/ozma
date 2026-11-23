@@ -145,6 +145,11 @@ impl CommandPalette {
                 action: Action::ExportJsonClipboard,
             },
             Command {
+                name: "Manage MCP Servers".into(),
+                shortcut: "".into(),
+                action: Action::OpenMcpServerPicker,
+            },
+            Command {
                 name: "Quit".into(),
                 shortcut: "Ctrl+Q".into(),
                 action: Action::Quit,

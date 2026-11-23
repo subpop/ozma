@@ -271,6 +271,7 @@ mod tests {
             args: vec!["-c".to_string(), "echo noisy-stderr-line >&2".to_string()],
             env: std::collections::HashMap::new(),
             url: None,
+            enabled: true,
         };
 
         // The handshake fails (the child speaks no MCP) — that's expected;

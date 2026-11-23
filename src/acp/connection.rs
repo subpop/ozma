@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
     CreateTerminalResponse, DeleteSessionRequest, FileSystemCapabilities, Implementation,
@@ -16,7 +17,6 @@ use agent_client_protocol::v1::schema::{
     TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
-use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use color_eyre::eyre::{Result, eyre};
 use tokio::io::AsyncReadExt;

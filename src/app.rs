@@ -188,9 +188,10 @@ impl<'a> App<'a> {
 
         // Connect ACP agent if that is the active source
         if let Some(agent_cfg) = self.config.active_agent().cloned() {
+            let mcp_configs = self.active_mcp_configs();
             match AcpConnection::connect(
                 &agent_cfg,
-                self.config.mcp_servers.clone(),
+                mcp_configs,
                 self.config.tools.clone(),
                 tui.event_tx.clone(),
             )
@@ -582,9 +583,10 @@ impl<'a> App<'a> {
                             if let Some(acp) = self.acp_ref() {
                                 acp.shutdown();
                             }
+                            let mcp_configs = self.active_mcp_configs();
                             match AcpConnection::connect(
                                 &agent_cfg,
-                                self.config.mcp_servers.clone(),
+                                mcp_configs,
                                 self.config.tools.clone(),
                                 event_tx,
                             )
@@ -927,6 +929,52 @@ impl<'a> App<'a> {
                 self.pricing = Some(catalog.clone());
                 self.update_context_window();
             }
+            Action::OpenMcpServerPicker => {
+                let configs = self.config.mcp_servers.clone();
+                let disabled = self.home.conversation.disabled_mcp_servers.clone();
+                let tool_counts = self.mcp_tool_counts();
+                self.home
+                    .show_mcp_server_picker(&configs, &disabled, &tool_counts);
+            }
+            Action::CloseMcpServerPicker => {
+                // Handled by home.update, but also ensure state
+            }
+            Action::ToggleMcpServer(name) => {
+                // Toggle in current conversation's disabled set
+                let currently_disabled = self
+                    .home
+                    .conversation
+                    .disabled_mcp_servers
+                    .contains(name.as_str());
+                if currently_disabled {
+                    self.home
+                        .conversation
+                        .disabled_mcp_servers
+                        .remove(name.as_str());
+                    info!("Enabled MCP server '{}' for session", name);
+                } else {
+                    self.home
+                        .conversation
+                        .disabled_mcp_servers
+                        .insert(name.clone());
+                    info!("Disabled MCP server '{}' for session", name);
+                }
+                // Persist if conversation already saved
+                self.persist_session_config();
+                // Refresh picker view
+                let configs = self.config.mcp_servers.clone();
+                let disabled = self.home.conversation.disabled_mcp_servers.clone();
+                let tool_counts = self.mcp_tool_counts();
+                self.home
+                    .update_mcp_server_picker(&configs, &disabled, &tool_counts);
+                // Show flash
+                let msg = if currently_disabled {
+                    format!("Enabled MCP server '{name}'")
+                } else {
+                    format!("Disabled MCP server '{name}'")
+                };
+                let _ = self.home.update(&Action::ExportComplete(msg));
+            }
             Action::Noop | Action::Tick | Action::Render => {}
             Action::Resize(_, _) => {}
             _ => {}
@@ -1073,11 +1121,35 @@ impl<'a> App<'a> {
         info!("Executing tool: {}", tool_summary);
 
         let is_builtin = self.tool_registry.is_builtin(&tool_call.fn_name);
-        let is_mcp = if let Ok(mcp) = self.mcp_manager.try_lock() {
-            mcp.is_mcp_tool(&tool_call.fn_name)
+        let (is_mcp, disabled_server) = if let Ok(mcp) = self.mcp_manager.try_lock() {
+            let is_mcp = mcp.is_mcp_tool(&tool_call.fn_name);
+            let server = if is_mcp {
+                mcp.server_for_tool(&tool_call.fn_name)
+            } else {
+                None
+            };
+            let disabled = server
+                .as_ref()
+                .is_some_and(|s| self.home.conversation.disabled_mcp_servers.contains(s));
+            (is_mcp, if disabled { server } else { None })
         } else {
-            false
+            (false, None)
         };
+
+        if let Some(server) = disabled_server {
+            let _ = event_tx.send(Event::ToolExecutionResult {
+                call_id: tool_call.call_id.clone(),
+                fn_name: tool_call.fn_name.clone(),
+                content: vec![ContentPart::Text {
+                    text: format!(
+                        "MCP server '{server}' is disabled for this session. Enable it via Manage MCP Servers."
+                    ),
+                }],
+                success: false,
+                blobs: Vec::new(),
+            });
+            return;
+        }
 
         if !is_builtin && !is_mcp {
             let _ = event_tx.send(Event::ToolExecutionResult {
@@ -1202,6 +1274,33 @@ impl<'a> App<'a> {
             });
         }
         sources
+    }
+
+    /// MCP servers filtered by config `enabled` and current session's disabled set.
+    /// For ACP, this is evaluated at session creation — toggling mid-session requires a new session.
+    fn active_mcp_configs(&self) -> Vec<crate::config::McpServerConfig> {
+        let disabled = &self.home.conversation.disabled_mcp_servers;
+        self.config
+            .enabled_mcp_servers()
+            .into_iter()
+            .filter(|c| !disabled.contains(&c.name))
+            .collect()
+    }
+
+    /// Snapshot of tool counts per MCP server for the picker UI.
+    fn mcp_tool_counts(&self) -> std::collections::HashMap<String, usize> {
+        if let Ok(mcp) = self.mcp_manager.try_lock() {
+            let mut map = std::collections::HashMap::new();
+            for cfg in self.config.enabled_mcp_servers() {
+                let n = mcp.tool_count_for_server(&cfg.name);
+                if n > 0 {
+                    map.insert(cfg.name.clone(), n);
+                }
+            }
+            map
+        } else {
+            std::collections::HashMap::new()
+        }
     }
 
     // ── Persistence helpers ────────────────────────────────────────
@@ -1607,8 +1706,14 @@ impl<'a> App<'a> {
 
         // Add MCP tools (need to block briefly to get the lock — MCP manager
         // is only mutated during startup, so this lock is uncontended during chat)
+        // Filter out session-disabled servers.
         if let Ok(mcp) = self.mcp_manager.try_lock() {
-            tools.extend(mcp.genai_tools());
+            let disabled = &self.home.conversation.disabled_mcp_servers;
+            if disabled.is_empty() {
+                tools.extend(mcp.genai_tools());
+            } else {
+                tools.extend(mcp.genai_tools_filtered(disabled));
+            }
         }
 
         // Once saved, the session owns its params (already snapshotted).

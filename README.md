@@ -68,7 +68,7 @@ ozma loads its base config from `config.json` (see paths above). If that file do
 
 A JSON Schema is available at `docs/config.schema.json` (published at `https://subpop.github.io/ozma/config.schema.json`). You can opt into editor validation/autocomplete by adding `"$schema"` to your config.
 
-If a `.ozma.json` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Objects merge by key; arrays like `mcp_servers` append to the base list.)
+If a `.ozma.json` file exists in the current working directory when you start ozma, it is layered on top of the user config and overrides matching keys. (Objects merge by key; `mcp_servers` entries merge by `name` so a local entry can override or disable a global server; other arrays append.)
 
 Providers are configured as an object map, where each key is the provider name.
 Set `default_model` to explicitly choose the provider's startup model; if omitted, ozma uses the first model in `models` (or the first discovered model when `models` is omitted).
@@ -242,7 +242,7 @@ Mouse wheel scrolls the conversation; click a message or code block to select it
 
 ### Command Palette
 
-Open with `Ctrl+P`. Includes session management, model/persona switching, parameter overrides (`temperature`, `top_p`, `max_tokens`), export to Markdown/JSON (file or clipboard), scrolling, and quit.
+Open with `Ctrl+P`. Includes session management, model/persona switching, parameter overrides (`temperature`, `top_p`, `max_tokens`), export to Markdown/JSON (file or clipboard), MCP server enable/disable per session, scrolling, and quit.
 
 ## Built-in Tools
 

@@ -138,6 +138,11 @@ pub struct McpServerConfig {
     /// URL for HTTP transport (e.g., "http://localhost:3000/mcp").
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Whether this server is enabled. Disabled servers are skipped during connection.
+    /// Defaults to true for backwards compatibility.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 fn default_stdio() -> String {
@@ -537,6 +542,15 @@ impl Config {
             cfg.system_prompt.clone(),
         )
     }
+
+    /// MCP servers that are enabled in config (filters out `enabled: false`).
+    pub fn enabled_mcp_servers(&self) -> Vec<McpServerConfig> {
+        self.mcp_servers
+            .iter()
+            .filter(|c| c.enabled)
+            .cloned()
+            .collect()
+    }
 }
 
 impl Default for Config {
@@ -585,6 +599,21 @@ fn merge_json_values(base: &mut serde_json::Value, overlay: serde_json::Value) {
         (serde_json::Value::Object(base_obj), serde_json::Value::Object(overlay_obj)) => {
             for (key, overlay_value) in overlay_obj {
                 if let Some(base_value) = base_obj.get_mut(&key) {
+                    // Special case: mcp_servers merges by `name` so a local `.ozma.json`
+                    // can disable or override a global server without duplication (Option B).
+                    if key == "mcp_servers" && base_value.is_array() && overlay_value.is_array() {
+                        // Take ownership of overlay if it's an array, otherwise fall through.
+                        if let serde_json::Value::Array(overlay_array) = overlay_value {
+                            if let serde_json::Value::Array(base_array) = &mut *base_value {
+                                merge_mcp_servers_by_name(base_array, overlay_array);
+                                continue;
+                            } else {
+                                // Should not happen: base_value.is_array() was true
+                                *base_value = serde_json::Value::Array(overlay_array);
+                                continue;
+                            }
+                        }
+                    }
                     merge_json_values(base_value, overlay_value);
                 } else {
                     base_obj.insert(key, overlay_value);
@@ -597,6 +626,33 @@ fn merge_json_values(base: &mut serde_json::Value, overlay: serde_json::Value) {
         (base_value, overlay_value) => {
             *base_value = overlay_value;
         }
+    }
+}
+
+fn merge_mcp_servers_by_name(
+    base_array: &mut Vec<serde_json::Value>,
+    overlay_array: Vec<serde_json::Value>,
+) {
+    // Index base entries by name for O(1) lookup.
+    // We keep order of base; overlay updates in place or appends.
+    for overlay_entry in overlay_array {
+        if let Some(overlay_name) = overlay_entry
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+        {
+            if let Some(base_entry) = base_array.iter_mut().find(|base_entry| {
+                base_entry
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|n| n == overlay_name)
+            }) {
+                // Deep-merge overlay into existing entry (so partial overrides like {"name":"x","enabled":false} work).
+                merge_json_values(base_entry, overlay_entry);
+                continue;
+            }
+        }
+        base_array.push(overlay_entry);
     }
 }
 

@@ -93,11 +93,19 @@ impl Store {
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| eyre!("Failed to serialize tool permissions: {}", e))?;
+        let disabled_mcp_servers = serde_json::to_string(
+            &conversation
+                .disabled_mcp_servers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| eyre!("Failed to serialize disabled MCP servers: {}", e))?;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO conversations
-             (id, title, provider, model, temperature, top_p, max_tokens, persona, tool_permissions, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, title, provider, model, temperature, top_p, max_tokens, persona, tool_permissions, disabled_mcp_servers, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 conversation.id.to_string(),
                 conversation.title,
@@ -108,6 +116,7 @@ impl Store {
                 conversation.param_overrides.max_tokens,
                 conversation.persona.name(),
                 tool_permissions,
+                disabled_mcp_servers,
                 conversation.created_at.timestamp(),
                 conversation.updated_at.timestamp(),
             ],
@@ -138,12 +147,20 @@ impl Store {
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| eyre!("Failed to serialize tool permissions: {}", e))?;
+        let disabled_mcp_servers = serde_json::to_string(
+            &conversation
+                .disabled_mcp_servers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| eyre!("Failed to serialize disabled MCP servers: {}", e))?;
 
         self.conn.execute(
             "UPDATE conversations
              SET provider = ?1, model = ?2, temperature = ?3, top_p = ?4,
-                 max_tokens = ?5, persona = ?6, tool_permissions = ?7, updated_at = ?8
-             WHERE id = ?9",
+                 max_tokens = ?5, persona = ?6, tool_permissions = ?7, disabled_mcp_servers = ?8, updated_at = ?9
+             WHERE id = ?10",
             params![
                 conversation.provider,
                 conversation.model,
@@ -152,6 +169,7 @@ impl Store {
                 conversation.param_overrides.max_tokens,
                 conversation.persona.name(),
                 tool_permissions,
+                disabled_mcp_servers,
                 conversation.updated_at.timestamp(),
                 conversation.id.to_string(),
             ],
@@ -209,41 +227,9 @@ impl Store {
     pub fn load_conversation(&self, id: &Uuid) -> Result<Option<Conversation>> {
         let id_str = id.to_string();
 
-        // Load conversation header (including session config)
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, provider, model, temperature, top_p, max_tokens,
-                    persona, tool_permissions, created_at, updated_at
-             FROM conversations WHERE id = ?1",
-        )?;
-
-        let conv_result = stmt.query_row(params![id_str], |row| {
-            let id_str: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let provider: String = row.get(2)?;
-            let model: String = row.get(3)?;
-            let temperature: Option<f64> = row.get(4)?;
-            let top_p: Option<f64> = row.get(5)?;
-            let max_tokens: Option<u32> = row.get(6)?;
-            let persona_str: String = row.get(7)?;
-            let tool_permissions: String = row.get(8)?;
-            let created_ts: i64 = row.get(9)?;
-            let updated_ts: i64 = row.get(10)?;
-
-            Ok((
-                id_str,
-                title,
-                provider,
-                model,
-                temperature,
-                top_p,
-                max_tokens,
-                persona_str,
-                tool_permissions,
-                created_ts,
-                updated_ts,
-            ))
-        });
-
+        // Load conversation header (including session config).
+        // For backwards compat, try the new schema (with disabled_mcp_servers) first
+        // and fall back to the old one if the column doesn't exist yet.
         let (
             conv_id_str,
             title,
@@ -254,12 +240,98 @@ impl Store {
             max_tokens,
             persona_str,
             tool_permissions,
+            disabled_mcp_servers_str,
             created_ts,
             updated_ts,
-        ) = match conv_result {
-            Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(e) => return Err(e.into()),
+        ): (
+            String,
+            String,
+            String,
+            String,
+            Option<f64>,
+            Option<f64>,
+            Option<u32>,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+        ) = {
+            let mut stmt_new = self.conn.prepare(
+                "SELECT id, title, provider, model, temperature, top_p, max_tokens,
+                        persona, tool_permissions, disabled_mcp_servers, created_at, updated_at
+                 FROM conversations WHERE id = ?1",
+            )?;
+            match stmt_new.query_row(params![id_str.clone()], |row| {
+                let id_str: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let provider: String = row.get(2)?;
+                let model: String = row.get(3)?;
+                let temperature: Option<f64> = row.get(4)?;
+                let top_p: Option<f64> = row.get(5)?;
+                let max_tokens: Option<u32> = row.get(6)?;
+                let persona_str: String = row.get(7)?;
+                let tool_permissions: String = row.get(8)?;
+                let disabled_mcp_servers: String = row.get(9)?;
+                let created_ts: i64 = row.get(10)?;
+                let updated_ts: i64 = row.get(11)?;
+                Ok((
+                    id_str,
+                    title,
+                    provider,
+                    model,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    persona_str,
+                    tool_permissions,
+                    disabled_mcp_servers,
+                    created_ts,
+                    updated_ts,
+                ))
+            }) {
+                Ok(row) => row,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) if e.to_string().contains("no such column") => {
+                    let mut stmt_old = self.conn.prepare(
+                        "SELECT id, title, provider, model, temperature, top_p, max_tokens,
+                                persona, tool_permissions, created_at, updated_at
+                         FROM conversations WHERE id = ?1",
+                    )?;
+                    match stmt_old.query_row(params![id_str], |row| {
+                        let id_str: String = row.get(0)?;
+                        let title: String = row.get(1)?;
+                        let provider: String = row.get(2)?;
+                        let model: String = row.get(3)?;
+                        let temperature: Option<f64> = row.get(4)?;
+                        let top_p: Option<f64> = row.get(5)?;
+                        let max_tokens: Option<u32> = row.get(6)?;
+                        let persona_str: String = row.get(7)?;
+                        let tool_permissions: String = row.get(8)?;
+                        let created_ts: i64 = row.get(9)?;
+                        let updated_ts: i64 = row.get(10)?;
+                        Ok((
+                            id_str,
+                            title,
+                            provider,
+                            model,
+                            temperature,
+                            top_p,
+                            max_tokens,
+                            persona_str,
+                            tool_permissions,
+                            "[]".to_string(),
+                            created_ts,
+                            updated_ts,
+                        ))
+                    }) {
+                        Ok(row) => row,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                        Err(e2) => return Err(e2.into()),
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
         };
 
         // Load messages
@@ -348,6 +420,11 @@ impl Store {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        conversation.disabled_mcp_servers =
+            serde_json::from_str::<Vec<String>>(&disabled_mcp_servers_str)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
         conversation.messages = messages;
         conversation.created_at = Utc.timestamp_opt(created_ts, 0).unwrap();
         conversation.updated_at = Utc.timestamp_opt(updated_ts, 0).unwrap();

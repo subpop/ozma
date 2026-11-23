@@ -47,6 +47,9 @@ pub struct Conversation {
     /// Per-conversation tool permission overrides from "Always" selections.
     /// Contains tool names that should be auto-approved for this conversation.
     pub always_allow_tools: BTreeSet<String>,
+    /// MCP servers disabled for this conversation (by server name).
+    /// Empty means all enabled servers from config are active.
+    pub disabled_mcp_servers: BTreeSet<String>,
 }
 
 impl Conversation {
@@ -68,6 +71,7 @@ impl Conversation {
             session_cost: 0.0,
             persona: Persona::default(),
             always_allow_tools: BTreeSet::new(),
+            disabled_mcp_servers: BTreeSet::new(),
         }
     }
 

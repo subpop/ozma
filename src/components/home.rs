@@ -15,6 +15,7 @@ use crate::components::command_palette::CommandPalette;
 use crate::components::conversation_view::ConversationView;
 use crate::components::input::Input;
 use crate::components::mcp_log::McpLogView;
+use crate::components::mcp_server_picker::McpServerPicker;
 use crate::components::model_picker::{ModelPicker, ModelSourceConfig};
 use crate::components::param_input::ParamInput;
 use crate::components::persona_picker::PersonaPicker;
@@ -62,6 +63,8 @@ pub struct Home<'a> {
     param_input: ParamInput,
     /// The MCP server log overlay.
     mcp_log: McpLogView,
+    /// The MCP server picker overlay.
+    mcp_server_picker: McpServerPicker,
     /// Model params from config (provider-level defaults).
     config_model_params: ModelParams,
     /// Whether a streaming response is in progress.
@@ -97,6 +100,7 @@ impl<'a> Home<'a> {
             available_personas: Persona::builtins(),
             param_input: ParamInput::new(),
             mcp_log: McpLogView::new(),
+            mcp_server_picker: McpServerPicker::new(),
             config_model_params: ModelParams::default(),
             streaming: false,
             compacting: false,
@@ -138,6 +142,28 @@ impl<'a> Home<'a> {
     /// Set the personas shown in the picker.
     pub fn set_available_personas(&mut self, personas: Vec<Persona>) {
         self.available_personas = personas;
+    }
+
+    /// Show the MCP server picker with current config + disabled set + tool counts.
+    pub fn show_mcp_server_picker(
+        &mut self,
+        configs: &[crate::config::McpServerConfig],
+        disabled: &std::collections::BTreeSet<String>,
+        tool_counts: &std::collections::HashMap<String, usize>,
+    ) {
+        self.command_palette.hide();
+        self.mcp_server_picker.show(configs, disabled, tool_counts);
+        self.input.set_focused(false);
+    }
+
+    pub fn update_mcp_server_picker(
+        &mut self,
+        configs: &[crate::config::McpServerConfig],
+        disabled: &std::collections::BTreeSet<String>,
+        tool_counts: &std::collections::HashMap<String, usize>,
+    ) {
+        self.mcp_server_picker
+            .update_after_toggle(configs, disabled, tool_counts);
     }
 
     /// Replace the current conversation with a loaded one.
@@ -221,6 +247,7 @@ impl Home<'_> {
         self.persona_picker.render_overlay(frame, area);
         self.param_input.render_overlay(frame, area);
         self.mcp_log.render_overlay(frame, area);
+        self.mcp_server_picker.render_overlay(frame, area);
 
         // Render permission prompt overlay on top of everything
         if self.has_permission_prompt() {
@@ -288,6 +315,11 @@ impl Component for Home<'_> {
         // If the MCP log view is visible, it handles keys exclusively
         if self.mcp_log.visible {
             return self.mcp_log.handle_key_event(key);
+        }
+
+        // If the MCP server picker is visible, it handles keys exclusively
+        if self.mcp_server_picker.visible {
+            return self.mcp_server_picker.handle_key_event(key);
         }
 
         // If permission prompt is showing, handle permission keys
@@ -645,6 +677,21 @@ impl Component for Home<'_> {
             Action::McpLogAppend { server, line } => {
                 self.mcp_log.push(server, line);
             }
+            // -- MCP server picker --
+            Action::OpenMcpServerPicker => {
+                // Handled in App (needs config + mcp_manager data) — keep focus handling here
+                self.command_palette.hide();
+                self.input.set_focused(false);
+            }
+            Action::CloseMcpServerPicker => {
+                self.mcp_server_picker.hide();
+                if !self.streaming && !self.executing_tools {
+                    self.input.set_focused(true);
+                }
+            }
+            Action::ToggleMcpServer(_) => {
+                // Actual toggle handled in App; keep picker open
+            }
             Action::SetTemperature(val) => {
                 self.conversation.param_overrides.temperature = *val;
             }
@@ -788,6 +835,15 @@ impl Home<'_> {
             }
             spans.push(Span::raw("  "));
             spans.push(Span::styled(parts.join(" "), param_style));
+        }
+
+        // Show MCP disabled count if any session-disabled servers
+        if !self.conversation.disabled_mcp_servers.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("mcp:{} off", self.conversation.disabled_mcp_servers.len()),
+                Style::default().fg(Color::Yellow),
+            ));
         }
 
         // Show flash message if present

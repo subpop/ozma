@@ -50,12 +50,17 @@ impl McpManager {
     /// Connect to all MCP servers defined in the config.
     /// `event_tx` receives captured stderr lines from stdio servers as `Event::McpLog`.
     /// Errors for individual servers are logged but don't prevent other servers from connecting.
+    /// Disabled servers (`enabled: false`) are skipped.
     pub async fn connect_all(
         &mut self,
         configs: &[McpServerConfig],
         event_tx: &UnboundedSender<Event>,
     ) {
         for config in configs {
+            if !config.enabled {
+                info!("Skipping disabled MCP server '{}'", config.name);
+                continue;
+            }
             match McpClient::connect(config, event_tx).await {
                 Ok(client) => {
                     // Register all tools from this server
@@ -123,6 +128,47 @@ impl McpManager {
         }
 
         tools
+    }
+
+    /// Generate genai `Tool` definitions for MCP tools, excluding disabled servers.
+    pub fn genai_tools_filtered(
+        &self,
+        disabled: &std::collections::BTreeSet<String>,
+    ) -> Vec<GenaiTool> {
+        if disabled.is_empty() {
+            return self.genai_tools();
+        }
+        let mut tools = Vec::new();
+        for client in self.clients.values() {
+            if disabled.contains(&client.name) {
+                continue;
+            }
+            for tool in &client.tools {
+                let namespaced_name = format!("{}__{}", client.name, tool.name);
+                let mut genai_tool = GenaiTool::new(ToolName::Custom(namespaced_name))
+                    .with_schema(tool.schema_as_json_value());
+                if let Some(desc) = tool.description.as_deref() {
+                    genai_tool = genai_tool.with_description(desc);
+                }
+                tools.push(genai_tool);
+            }
+        }
+        tools
+    }
+
+    /// Get the server name for a namespaced MCP tool, if it exists.
+    pub fn server_for_tool(&self, namespaced_name: &str) -> Option<String> {
+        self.tool_map
+            .get(namespaced_name)
+            .map(|(server, _)| server.clone())
+    }
+
+    /// Count tools for a specific server.
+    pub fn tool_count_for_server(&self, server_name: &str) -> usize {
+        self.clients
+            .get(server_name)
+            .map(|c| c.tools.len())
+            .unwrap_or(0)
     }
 
     /// Execute an MCP tool call.

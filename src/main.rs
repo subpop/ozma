@@ -62,13 +62,11 @@ async fn main() -> Result<()> {
             // Direct provider path — connect MCP in-process
             let provider = Provider::from_config(&config).await?;
             let mut mcp_manager = McpManager::new();
-            if !config.mcp_servers.is_empty() {
-                info!(
-                    "Connecting to {} MCP server(s)...",
-                    config.mcp_servers.len()
-                );
+            let enabled_servers = config.enabled_mcp_servers();
+            if !enabled_servers.is_empty() {
+                info!("Connecting to {} MCP server(s)...", enabled_servers.len());
                 mcp_manager
-                    .connect_all(&config.mcp_servers, &tui.event_tx)
+                    .connect_all(&enabled_servers, &tui.event_tx)
                     .await;
             }
             let mut app = App::new(provider, store, config, mcp_manager);

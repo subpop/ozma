@@ -11,6 +11,9 @@ use crate::config::McpServerConfig;
 pub fn mcp_servers_from_config(configs: &[McpServerConfig], include_http: bool) -> Vec<McpServer> {
     let mut out = Vec::new();
     for cfg in configs {
+        if !cfg.enabled {
+            continue;
+        }
         match cfg.transport.as_str() {
             "http" => {
                 if !include_http {
@@ -54,6 +57,7 @@ mod tests {
             args: vec!["-y".into(), "server".into()],
             env: HashMap::new(),
             url: None,
+            enabled: true,
         }
     }
 
@@ -65,6 +69,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             url: Some("http://localhost:3000/mcp".to_string()),
+            enabled: true,
         }
     }
 

@@ -3,6 +3,7 @@ pub mod conversation_view;
 pub mod home;
 pub mod input;
 pub mod mcp_log;
+pub mod mcp_server_picker;
 pub mod model_picker;
 pub mod param_input;
 pub mod persona_picker;

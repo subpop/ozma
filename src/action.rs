@@ -200,6 +200,14 @@ pub enum Action {
     /// Append a captured stderr line from an MCP server to the log view
     McpLogAppend { server: String, line: String },
 
+    // -- MCP server management --
+    /// Open the MCP server picker overlay
+    OpenMcpServerPicker,
+    /// Close the MCP server picker overlay
+    CloseMcpServerPicker,
+    /// Toggle enabled/disabled for a given MCP server in the current session
+    ToggleMcpServer(String),
+
     // -- ACP display / replay --
     /// Show an ACP tool call in the conversation.
     AcpToolCallDisplay(ToolCallInfo),

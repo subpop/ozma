@@ -58,6 +58,10 @@ const MIGRATION_ARRAY: &[M] = &[
         "ALTER TABLE conversations
          ADD COLUMN tool_permissions TEXT NOT NULL DEFAULT '[]';",
     ),
+    M::up(
+        "ALTER TABLE conversations
+         ADD COLUMN disabled_mcp_servers TEXT NOT NULL DEFAULT '[]';",
+    ),
 ];
 
 pub const MIGRATIONS: Migrations<'_> = Migrations::from_slice(MIGRATION_ARRAY);
